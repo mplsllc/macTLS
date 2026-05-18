@@ -1,8 +1,3 @@
-/* macSSL fix5 sentinel: if CW8 reports this #error the new file is live */
-#ifdef __MWERKS__
-#error "ostls_entropy.c fix5 -- no LMGetMouse"
-#endif
-
 /*
  * ostls_entropy.c -- Stage A INSECURE entropy stub. See ostls_entropy.h.
  *

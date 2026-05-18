@@ -34,6 +34,23 @@
 #ifdef __MWERKS__
 
 /* ----------------------------------------------------------------- */
+/* ostls_entropy.c compatibility                                     */
+/* ----------------------------------------------------------------- */
+
+/*
+ * An older copy of ostls_entropy.c may call LMGetMouse() for entropy.
+ * CW8 sees LMGetMouse as returning int (implicit, no header declaring it),
+ * and rejects the assignment to Point with "illegal implicit conversion".
+ * Override with a macro that returns a zero Point — mouse position
+ * contributes nothing to Stage A's intentionally-insecure stub.
+ */
+#ifndef MACSSL_LMGetMouse_neutralised
+#define MACSSL_LMGetMouse_neutralised
+static Point macssl_zero_pt_; /* zero-initialized at file scope */
+#define LMGetMouse() macssl_zero_pt_
+#endif
+
+/* ----------------------------------------------------------------- */
 /* CW8 language compatibility                                        */
 /* ----------------------------------------------------------------- */
 
