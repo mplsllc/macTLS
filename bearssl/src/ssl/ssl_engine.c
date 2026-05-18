@@ -1,3 +1,8 @@
+/* macSSL fix5 sentinel: if CW8 reports this #error the new file is live */
+#ifdef __MWERKS__
+#error "ssl_engine.c fix5 -- C89 patched"
+#endif
+
 /*
  * Copyright (c) 2016 Thomas Pornin <pornin@bolet.org>
  *
@@ -1340,10 +1345,16 @@ br_ssl_engine_compute_master(br_ssl_engine_context *cc,
 	int prf_id, const void *pms, size_t pms_len)
 {
 	br_tls_prf_impl iprf;
-	br_tls_prf_seed_chunk seed[2] = {
-		{ cc->client_random, sizeof cc->client_random },
-		{ cc->server_random, sizeof cc->server_random }
-	};
+	br_tls_prf_seed_chunk seed[2];
+
+	/* macSSL CW8 C89 patch: split aggregate initializer with non-
+	 * constant values into explicit member assignments. Strict C89
+	 * (which CW8 enforces) rejects member references via a pointer
+	 * deref in an automatic-storage aggregate initializer. */
+	seed[0].data = cc->client_random;
+	seed[0].len = sizeof cc->client_random;
+	seed[1].data = cc->server_random;
+	seed[1].len = sizeof cc->server_random;
 
 	iprf = br_ssl_engine_get_PRF(cc, prf_id);
 	iprf(cc->session.master_secret, sizeof cc->session.master_secret,
@@ -1358,10 +1369,13 @@ compute_key_block(br_ssl_engine_context *cc, int prf_id,
 	size_t half_len, unsigned char *kb)
 {
 	br_tls_prf_impl iprf;
-	br_tls_prf_seed_chunk seed[2] = {
-		{ cc->server_random, sizeof cc->server_random },
-		{ cc->client_random, sizeof cc->client_random }
-	};
+	br_tls_prf_seed_chunk seed[2];
+
+	/* macSSL CW8 C89 patch: see br_ssl_engine_compute_master() above. */
+	seed[0].data = cc->server_random;
+	seed[0].len = sizeof cc->server_random;
+	seed[1].data = cc->client_random;
+	seed[1].len = sizeof cc->client_random;
 
 	iprf = br_ssl_engine_get_PRF(cc, prf_id);
 	iprf(kb, half_len << 1,
