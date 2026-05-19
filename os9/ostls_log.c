@@ -25,21 +25,24 @@
 #ifdef __MWERKS__
 #include <Files.h>
 #include <Folders.h>
+#include <Script.h>             /* smRoman */
 #else
-/* Non-CW8 stubs. */
+/* Non-CW8 stubs. The CW8 File Manager exposes file refnums as plain
+ * 'short' (FSIORefNum is a newer Carbon typedef and isn't available
+ * on CW8's Universal Interfaces), so we keep the type small here too.
+ */
 typedef long OSStatus;
-typedef short FSVolumeRefNum;
 typedef long FSDirID;
 typedef struct {
     short vRefNum;
     long parID;
     unsigned char name[64];
 } FSSpec;
-typedef short FSIORefNum;
 #define noErr 0
 #define kOnSystemDisk -32768
 #define kDesktopFolderType 'desk'
 #define fsRdWrPerm 3
+#define smRoman 0
 static OSStatus FindFolder(short v, long t, unsigned char create,
     short *out_v, long *out_d){(void)v;(void)t;(void)create;
     *out_v=0;*out_d=0;return noErr;}
@@ -48,13 +51,12 @@ static OSStatus FSMakeFSSpec(short v, long d, const unsigned char *n, FSSpec *s)
 static OSStatus FSpDelete(const FSSpec *s){(void)s;return noErr;}
 static OSStatus FSpCreate(const FSSpec *s, unsigned long c, unsigned long t,
     short script){(void)s;(void)c;(void)t;(void)script;return noErr;}
-static OSStatus FSpOpenDF(const FSSpec *s, char perm, FSIORefNum *r){
+static OSStatus FSpOpenDF(const FSSpec *s, char perm, short *r){
     (void)s;(void)perm;*r=0;return noErr;}
-static OSStatus FSWrite(FSIORefNum r, long *count, const void *buf){
+static OSStatus FSWrite(short r, long *count, const void *buf){
     (void)r;(void)buf;return noErr;}
-static OSStatus FSClose(FSIORefNum r){(void)r;return noErr;}
+static OSStatus FSClose(short r){(void)r;return noErr;}
 static OSStatus FlushVol(const unsigned char *name, short v){(void)name;(void)v;return noErr;}
-#define smRoman 0
 #endif
 
 
@@ -62,9 +64,15 @@ static OSStatus FlushVol(const unsigned char *name, short v){(void)name;(void)v;
 /* State                                                             */
 /* ----------------------------------------------------------------- */
 
-static FSIORefNum gLogRef = 0;
-static short      gLogVol = 0;
-static int        gLogOpen = 0;
+/*
+ * File refnum is plain 'short' under classic File Manager and CW8
+ * Universal Interfaces. FSIORefNum is the modern Carbon typedef that
+ * isn't reachable from CW8's headers; using 'short' keeps both
+ * toolchains parsing the same code.
+ */
+static short gLogRef = 0;
+static short gLogVol = 0;
+static int   gLogOpen = 0;
 
 
 /* ----------------------------------------------------------------- */
