@@ -47,6 +47,10 @@ typedef struct { OTByteCount maxlen, len; UInt8 *buf; } TNetbuf;
 typedef struct { TNetbuf addr; TNetbuf opt; long qlen; } TBind;
 typedef struct { TNetbuf addr; TNetbuf opt; TNetbuf udata; long sequence; } TCall;
 typedef struct {
+    long addr, options, tsdu, etsdu, connect, discon;
+    long servtype, flags, qlen;
+} TEndpointInfo;
+typedef struct {
     unsigned short fAddressType;
     InetPort       fPort;
     InetHost       fHost;
@@ -138,12 +142,35 @@ OSTLS_C1_Listener_Probe(unsigned short port,
     }
 
     oterr = noErr;
-    listener_ep = OTOpenEndpointInContext(cfg_listener, 0, NULL,
-                                          &oterr, g_ostls_ot_context);
-    if (oterr != noErr || listener_ep == NULL) {
-        c1_status(out_msg, out_msg_len,
-            "C1: OTOpenEndpoint FAIL (listener)", (long)oterr);
-        return (OSErr)kOSTLSC1_OTOpenEndptFail;
+    {
+        TEndpointInfo ep_info;
+        OTMemzero(&ep_info, sizeof ep_info);
+        /* Pass &ep_info so OT fills in the endpoint capabilities.
+         * info.qlen is the maximum bind qlen this endpoint can
+         * accept; if it's 0, OTBind with qlen >= 1 will always
+         * fail with kOTBadAddressErr regardless of how clean the
+         * address is. */
+        listener_ep = OTOpenEndpointInContext(cfg_listener, 0, &ep_info,
+                                              &oterr, g_ostls_ot_context);
+        if (oterr != noErr || listener_ep == NULL) {
+            OSTLS_LogLinef("C1 diag    OTOpenEndpoint failed err=%ld",
+                           (long)oterr);
+            c1_status(out_msg, out_msg_len,
+                "C1: OTOpenEndpoint FAIL (listener)", (long)oterr);
+            return (OSErr)kOSTLSC1_OTOpenEndptFail;
+        }
+        OSTLS_LogLinef("C1 diag    endpoint info: addr=%ld options=%ld tsdu=%ld",
+                       (long)ep_info.addr,
+                       (long)ep_info.options,
+                       (long)ep_info.tsdu);
+        OSTLS_LogLinef("C1 diag    endpoint info: etsdu=%ld connect=%ld discon=%ld",
+                       (long)ep_info.etsdu,
+                       (long)ep_info.connect,
+                       (long)ep_info.discon);
+        OSTLS_LogLinef("C1 diag    endpoint info: servtype=%ld flags=0x%lX qlen=%ld",
+                       (long)ep_info.servtype,
+                       (long)ep_info.flags,
+                       (long)ep_info.qlen);
     }
     OTSetSynchronous(listener_ep);
     OTSetBlocking(listener_ep);
@@ -151,7 +178,21 @@ OSTLS_C1_Listener_Probe(unsigned short port,
     /* ----- 2. Bind on 0.0.0.0:port with backlog 1 ----- */
 
     OTMemzero(&local_addr, sizeof local_addr);
-    OTInitInetAddress(&local_addr, (InetPort)port, (InetHost)0UL);
+    /*
+     * Bind to 127.0.0.1 explicitly rather than INADDR_ANY (0).
+     * Apple's OT documentation says 0 means "any local IP," but
+     * some classic OT configurations require a concrete configured
+     * interface address and reject 0 with kOTBadAddressErr. Loopback
+     * is always present on a working IP stack, so binding to it is
+     * the safest single-address test.
+     *
+     * 127.0.0.1 in host byte order = 0x7F000001 = 2130706433.
+     * For a proxy that wants to accept connections from other Macs
+     * on the LAN, swap this back to INADDR_ANY once the bind path
+     * is known good.
+     */
+    OTInitInetAddress(&local_addr, (InetPort)port,
+                      (InetHost)0x7F000001UL);
 
     OTMemzero(&bind_req, sizeof bind_req);
     bind_req.addr.buf    = (UInt8 *)&local_addr;
