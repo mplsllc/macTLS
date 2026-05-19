@@ -53,6 +53,8 @@
 #include "ostls_b2_handshake.h"
 #include "ostls_b3_handshake.h"
 #include "ostls_fetch.h"
+#include "ostls_d1_probe.h"
+#include "ostls_async.h"
 #include "ostls_log.h"
 
 
@@ -82,6 +84,22 @@
 #define OSTLS_D_PORT        443
 #define OSTLS_D_SERVERNAME  "google.com"
 #define OSTLS_D_PATH        "/"
+
+/*
+ * Stage D1 (async OT notifier smoke) target. Same host as D / D2;
+ * D1 tears down right after T_CONNECT without TLS, so it's just
+ * a TCP-level test of the async-OT plumbing.
+ */
+#define OSTLS_D1_TARGET     "google.com:443"
+
+/*
+ * Stage D2 (full async TLS) targets. Drives the OSTLSConnection
+ * state machine directly via OSTLS_New/Start/Pump/Write/Read.
+ */
+#define OSTLS_D2_HOST       "google.com"
+#define OSTLS_D2_PORT       443
+#define OSTLS_D2_SERVERNAME "google.com"
+#define OSTLS_D2_PATH       "/"
 
 
 /*
@@ -202,6 +220,37 @@ smoke_label(OSErr code)
     case kOSTLSFetch_BearSSLError:         return "Fetch BearSSL engine error";
     case kOSTLSFetch_RequestTooBig:        return "Fetch request too big";
     case kOSTLSFetch_NoBytesReceived:      return "Fetch peer closed before any plaintext";
+    case kOSTLSD1_BadArgs:                 return "D1 bad args";
+    case kOSTLSD1_OTConfigFail:            return "D1 OTCreateConfiguration failed";
+    case kOSTLSD1_OTAsyncOpenFail:         return "D1 OTAsyncOpenEndpoint failed";
+    case kOSTLSD1_OpenTimeout:             return "D1 T_OPENCOMPLETE timeout";
+    case kOSTLSD1_OpenBadResult:           return "D1 T_OPENCOMPLETE bad result";
+    case kOSTLSD1_OTBindSubmitFail:        return "D1 OTBind submit failed";
+    case kOSTLSD1_BindTimeout:             return "D1 T_BINDCOMPLETE timeout";
+    case kOSTLSD1_BindBadResult:           return "D1 T_BINDCOMPLETE bad result";
+    case kOSTLSD1_OTDnsAddrFail:           return "D1 OTInitDNSAddress failed";
+    case kOSTLSD1_OTConnectSubmitFail:     return "D1 OTConnect submit failed";
+    case kOSTLSD1_ConnectTimeout:          return "D1 T_CONNECT timeout";
+    case kOSTLSD1_ConnectBadResult:        return "D1 T_CONNECT bad result";
+    case kOSTLSD1_DisconnectArrived:       return "D1 T_DISCONNECT during connect";
+    case kOSTLSAsync_BadArgs:              return "Async bad args";
+    case kOSTLSAsync_NoMemory:             return "Async NewPtrClear failed";
+    case kOSTLSAsync_ClockBefore2000:      return "Async system clock before 2000";
+    case kOSTLSAsync_OTConfigFail:         return "Async OTCreateConfiguration failed";
+    case kOSTLSAsync_OTOpenFail:           return "Async OTAsyncOpenEndpoint failed";
+    case kOSTLSAsync_OTBindFail:           return "Async OTBind failed";
+    case kOSTLSAsync_OTConnectFail:        return "Async OTConnect failed";
+    case kOSTLSAsync_OTNotifierFail:       return "Async notifier install failed";
+    case kOSTLSAsync_OTSndFail:            return "Async OTSnd failed";
+    case kOSTLSAsync_OTRcvFail:            return "Async OTRcv failed";
+    case kOSTLSAsync_EntropyFail:          return "Async entropy inject failed";
+    case kOSTLSAsync_ClientResetFail:      return "Async br_ssl_client_reset failed";
+    case kOSTLSAsync_BearSSLError:         return "Async BearSSL engine error";
+    case kOSTLSAsync_ConnectTimeout:       return "Async connect timeout";
+    case kOSTLSAsync_HandshakeTimeout:     return "Async handshake timeout";
+    case kOSTLSAsync_PeerClosed:           return "Async peer closed before handshake";
+    case kOSTLSAsync_WrongState:           return "Async wrong-state API call";
+    case kOSTLSAsync_Disposed:             return "Async operation on disposed conn";
     }
     return "unknown failure";
 }
@@ -528,18 +577,47 @@ main(void)
     }
 
     /*
-     * Stage D: exercise the macSSL PUBLIC LIBRARY API end-to-end.
+     * Stage D1: async OT notifier smoke. Proves OTAsyncOpenEndpoint +
+     * notifier dispatch works for Open / Bind / Connect events on
+     * Carbon CFM. No BearSSL. Permanent regression -- the v0.2
+     * async TLS path (Stage D2) depends on this being green.
+     */
+    {
+        OSErr d1_result;
+        char  d1_msg[200];
+
+        OSTLS_LogLinef("Stage D1   async OT notifier smoke target=%s ...",
+                       OSTLS_D1_TARGET);
+        d1_result = OSTLS_D1_AsyncNotifier_Probe(OSTLS_D1_TARGET,
+                                                 d1_msg, sizeof d1_msg);
+        OSTLS_LogLinef("Stage D1   async OT notifier smoke    -> code=%d %s",
+                       (int)d1_result, d1_msg);
+
+        if (d1_result != kOSTLSD1_OK) {
+            sprintf(title_buf, "MacSSLTest -- Stage D1 FAILED");
+            sprintf(line1_buf, "Stage D1 FAILED (code %d): %.140s",
+                (int)d1_result, d1_msg);
+            sprintf(line2_buf, "Gate: %s (target=%s)",
+                smoke_label(d1_result), OSTLS_D1_TARGET);
+            OSTLS_LogBlank();
+            OSTLS_LogLinef("==== Stage D1 FAILED (code=%d) ====",
+                           (int)d1_result);
+            show_result_and_wait(title_buf, line1_buf, line2_buf);
+            ostls_ot_close();
+            OSTLS_LogClose();
+            return 0;
+        }
+    }
+
+    /*
+     * Stage D: exercise the macSSL v0.1 PUBLIC BLOCKING API.
      *
      * OSTLS_Fetch(host, port, server_name, path, out_buf, out_cap,
      *             out_len, out_msg, out_msg_len)
      *
-     * is the only public entry point macSSL now exposes. This stage
-     * replaces the former Stage B4 + Stage C1 path -- C1 (passive
-     * listener) was abandoned after fixes16-fixes34 established that
-     * Carbon CFM OT cannot bind to caller-chosen addresses (see
-     * docs/carbon-ot-passive-bind-finding.md). The B4 path was the
-     * de-facto library API in disguise; OSTLS_Fetch is the same
-     * logic with a stable public signature.
+     * was the first stable public entry point. Kept as the
+     * blocking regression baseline so any breakage in the v0.2
+     * async path stays distinguishable from a v0.1 regression.
      */
     {
         OSErr  d_result;
@@ -613,11 +691,12 @@ main(void)
             }
             short_resp[n_short] = '\0';
 
-            sprintf(title_buf, "MacSSLTest -- A..D OK (library)");
+            /* Don't emit "ALL STAGES OK" yet -- Stage D2 still to
+             * run. The line2 / title are placeholders that Stage D2
+             * will overwrite on its own success path. */
+            sprintf(title_buf, "MacSSLTest -- D OK (blocking lib)");
             sprintf(line1_buf, "OSTLS_Fetch %s", d_msg);
             sprintf(line2_buf, "Resp: %.140s", short_resp);
-            OSTLS_LogBlank();
-            OSTLS_LogLine("==== ALL STAGES OK ====");
         } else {
             sprintf(title_buf, "MacSSLTest -- Stage D FAILED");
             sprintf(line1_buf, "OSTLS_Fetch FAILED (code %d): %.140s",
@@ -629,7 +708,223 @@ main(void)
             OSTLS_LogBlank();
             OSTLS_LogLinef("==== Stage D FAILED (code=%d) ====",
                            (int)d_result);
+            show_result_and_wait(title_buf, line1_buf, line2_buf);
+            ostls_ot_close();
+            OSTLS_LogClose();
+            return 0;
         }
+    }
+
+    /*
+     * Stage D2: exercise the macSSL v0.2 ASYNC PUBLIC API directly.
+     *
+     * Drives OSTLSConnection through its lifecycle:
+     *   OSTLS_New + OSTLS_Start
+     *   poll-Pump until handshake done
+     *   OSTLS_Write the GET request
+     *   poll-Pump + OSTLS_Read until peer closes or buffer fills
+     *   OSTLS_Close + OSTLS_Dispose
+     *
+     * Bounded max_steps per Pump (we use 6) so each Pump call returns
+     * within milliseconds; in a real UI app you'd interleave with
+     * WaitNextEvent here.
+     */
+    {
+        OSTLSConnection *conn;
+        OSTLSConfig      cfg;
+        OSTLSEvent       ev;
+        OSTLSState       st;
+        OSErr            d2_err;
+        UInt32           written;
+        UInt32           total_read;
+        UInt32           chunk_count;
+        UInt32           pump_count;
+        UInt32           pump_deadline;
+        char             d2_request[256];
+        char             d2_msg[180];
+        unsigned char    d2_chunk[64];
+        Boolean          request_sent;
+        Boolean          handshake_logged;
+        Boolean          done;
+
+        OSTLS_LogLinef("Stage D2   async open %s:%u%s ...",
+                       OSTLS_D2_HOST, (unsigned)OSTLS_D2_PORT,
+                       OSTLS_D2_PATH);
+
+        memset(&cfg, 0, sizeof cfg);
+        cfg.host = OSTLS_D2_HOST;
+        cfg.port = (UInt16)OSTLS_D2_PORT;
+        cfg.server_name = OSTLS_D2_SERVERNAME;
+        cfg.connect_timeout_ticks = 0;    /* use default 30s */
+        cfg.handshake_timeout_ticks = 0;
+        cfg.user_refcon = NULL;
+
+        conn = NULL;
+        d2_err = OSTLS_New(&conn, &cfg);
+        if (d2_err != kOSTLSAsync_OK || conn == NULL) {
+            sprintf(d2_msg, "OSTLS_New FAIL code=%d", (int)d2_err);
+            goto d2_failed;
+        }
+
+        d2_err = OSTLS_Start(conn);
+        if (d2_err != kOSTLSAsync_OK) {
+            sprintf(d2_msg, "OSTLS_Start FAIL code=%d", (int)d2_err);
+            OSTLS_Dispose(conn);
+            goto d2_failed;
+        }
+
+        /* Build the GET request. */
+        sprintf(d2_request,
+            "GET %s HTTP/1.0\r\n"
+            "Host: %s\r\n"
+            "User-Agent: macSSL/0.2\r\n"
+            "Connection: close\r\n"
+            "\r\n",
+            OSTLS_D2_PATH, OSTLS_D2_SERVERNAME);
+
+        request_sent = false;
+        handshake_logged = false;
+        done = false;
+        total_read = 0;
+        chunk_count = 0;
+        pump_count = 0;
+        pump_deadline = (UInt32)TickCount() + 60UL * 60UL;  /* 60s */
+
+        while (!done) {
+            if ((UInt32)TickCount() > pump_deadline) {
+                sprintf(d2_msg, "D2 overall deadline exceeded");
+                OSTLS_Close(conn);
+                OSTLS_Dispose(conn);
+                d2_err = (OSErr)kOSTLSAsync_HandshakeTimeout;
+                goto d2_failed;
+            }
+
+            d2_err = OSTLS_Pump(conn, 6, &ev);
+            pump_count++;
+            if (d2_err != kOSTLSAsync_OK) {
+                sprintf(d2_msg, "OSTLS_Pump FAIL code=%d", (int)d2_err);
+                OSTLS_Close(conn);
+                OSTLS_Dispose(conn);
+                goto d2_failed;
+            }
+
+            st = OSTLS_GetState(conn);
+            if (st == kOSTLSStateFailed) {
+                OSTLSDiagnostics diag;
+                OSTLS_GetDiagnostics(conn, &diag);
+                sprintf(d2_msg,
+                    "D2 Failed os_err=%d ot=%ld br=%d",
+                    (int)diag.os_err, (long)diag.ot_err,
+                    diag.br_err);
+                d2_err = diag.os_err;
+                OSTLS_Dispose(conn);
+                goto d2_failed;
+            }
+
+            if (!handshake_logged && st == kOSTLSStateOpen) {
+                UInt16 suite = OSTLS_GetCipherSuite(conn);
+                const char *label;
+                switch (suite) {
+                case 0xC02B: label = "TLS1.2 ECDHE-ECDSA AES128-GCM"; break;
+                case 0xC02C: label = "TLS1.2 ECDHE-ECDSA AES256-GCM"; break;
+                case 0xC02F: label = "TLS1.2 ECDHE-RSA AES128-GCM";   break;
+                case 0xC030: label = "TLS1.2 ECDHE-RSA AES256-GCM";   break;
+                case 0xCCA8: label = "TLS1.2 ECDHE-RSA CHACHA20";     break;
+                case 0xCCA9: label = "TLS1.2 ECDHE-ECDSA CHACHA20";   break;
+                default:     label = "TLS1.2";                        break;
+                }
+                OSTLS_LogLinef("Stage D2   handshake OK %s 0x%04X",
+                               label, (unsigned)suite);
+                handshake_logged = true;
+            }
+
+            /* Once Open, push the request once. */
+            if (st == kOSTLSStateOpen && !request_sent) {
+                size_t req_len = strlen(d2_request);
+                written = 0;
+                d2_err = OSTLS_Write(conn, d2_request,
+                                     (UInt32)req_len, &written);
+                if (d2_err != kOSTLSAsync_OK) {
+                    sprintf(d2_msg, "OSTLS_Write FAIL code=%d",
+                            (int)d2_err);
+                    OSTLS_Close(conn);
+                    OSTLS_Dispose(conn);
+                    goto d2_failed;
+                }
+                if (written == (UInt32)req_len) {
+                    OSTLS_LogLinef("Stage D2   wrote %lu request bytes",
+                                   (unsigned long)written);
+                    request_sent = true;
+                }
+            }
+
+            /* Drain any decrypted bytes available. Multiple Reads
+             * per Pump are legal -- drain until out_read==0. */
+            if (st == kOSTLSStateOpen ||
+                st == kOSTLSStateClosing ||
+                st == kOSTLSStateClosed) {
+                UInt32 nread;
+                for (;;) {
+                    nread = 0;
+                    d2_err = OSTLS_Read(conn, d2_chunk,
+                                        (UInt32)sizeof d2_chunk,
+                                        &nread);
+                    if (d2_err != kOSTLSAsync_OK || nread == 0) {
+                        break;
+                    }
+                    chunk_count++;
+                    total_read += nread;
+                    if (chunk_count <= 10) {
+                        OSTLS_LogLinef(
+                            "Stage D2   read chunk %lu: %lu bytes",
+                            (unsigned long)chunk_count,
+                            (unsigned long)nread);
+                    } else if (chunk_count == 11) {
+                        OSTLS_LogLine(
+                            "Stage D2   read chunks beyond 10 suppressed");
+                    }
+                }
+            }
+
+            if (ev == kOSTLSEventClosed || st == kOSTLSStateClosed) {
+                done = true;
+            }
+        }
+
+        OSTLS_LogLinef("Stage D2   read total: %lu bytes in %lu chunk(s); %lu Pump call(s)",
+                       (unsigned long)total_read,
+                       (unsigned long)chunk_count,
+                       (unsigned long)pump_count);
+
+        OSTLS_Close(conn);
+        OSTLS_Dispose(conn);
+
+        OSTLS_LogLine("Stage D2   closed OK");
+        sprintf(d2_msg, "D2 OK %luB body in %lu chunks",
+                (unsigned long)total_read,
+                (unsigned long)chunk_count);
+
+        sprintf(title_buf, "MacSSLTest -- A..D2 OK (async)");
+        sprintf(line1_buf, "%.140s", d2_msg);
+        sprintf(line2_buf,
+                "D blocking OK; D2 async OK; Pump bounded.");
+        OSTLS_LogBlank();
+        OSTLS_LogLine("==== ALL STAGES OK ====");
+
+        goto d2_done;
+
+    d2_failed:
+        sprintf(title_buf, "MacSSLTest -- Stage D2 FAILED");
+        sprintf(line1_buf, "OSTLS_Async FAILED (code %d): %.140s",
+            (int)d2_err, d2_msg);
+        sprintf(line2_buf,
+            "Gate: %s (target=%s:%u)",
+            smoke_label(d2_err),
+            OSTLS_D2_HOST, (unsigned)OSTLS_D2_PORT);
+        OSTLS_LogBlank();
+        OSTLS_LogLinef("==== Stage D2 FAILED (code=%d) ====",
+                       (int)d2_err);
+    d2_done: ;
     }
 
     show_result_and_wait(title_buf, line1_buf, line2_buf);
