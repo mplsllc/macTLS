@@ -117,9 +117,19 @@ OSTLS_C1_Listener_Probe(unsigned short port,
     out_request[0] = '\0';
     received = 0;
 
-    /* ----- 1. Open listener endpoint ----- */
-
-    cfg_listener = OTCreateConfiguration("tcp");
+    /* ----- 1. Open listener endpoint -----
+     *
+     * The protocol-stack string for a TCP LISTENER must include the
+     * "tilisten" module on top of "tcp". Plain "tcp" gives you an
+     * outbound (client) endpoint; OTBind with qlen >= 1 against a
+     * plain "tcp" endpoint returns kOTBadAddressErr (-3150) because
+     * the underlying provider has no passive-open semantics. The
+     * tilisten module wraps tcp with listen / accept primitives.
+     *
+     * Outbound endpoints elsewhere in this project (B1, B2, B3, B4)
+     * correctly use just "tcp" because they only OTConnect.
+     */
+    cfg_listener = OTCreateConfiguration("tilisten,tcp");
     if (cfg_listener == NULL || cfg_listener == (OTConfigurationRef)-1L) {
         c1_status(out_msg, out_msg_len,
             "C1: OTCreateConfiguration FAIL (listener)", 0);
