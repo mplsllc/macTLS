@@ -52,6 +52,7 @@
 #include "ostls_b1_tcp.h"
 #include "ostls_b2_handshake.h"
 #include "ostls_b3_handshake.h"
+#include "ostls_log.h"
 
 
 /*
@@ -337,6 +338,15 @@ main(void)
 
     toolbox_init();
 
+    /*
+     * Bring up the file-backed logger first so every probe result
+     * is captured on disk in MacSSLTest.log on the Desktop. The log
+     * is the durable record we read back over scp; the result window
+     * is just the live UI.
+     */
+    (void)OSTLS_LogInit();
+    OSTLS_LogLine("==== MacSSLTest run ====");
+
     b1_msg[0] = '\0';
 
     /*
@@ -344,13 +354,18 @@ main(void)
      * arithmetic is wrong on this hardware, every Stage A or Stage B
      * pass below would be meaningless. Probe the kernel first.
      */
+    OSTLS_LogLine("Stage A.5  mul64 probe              ...");
     a5_result = OSTLS_Mul64Probe();
+    OSTLS_LogLinef("Stage A.5  mul64 probe              -> code=%d %s",
+                   (int)a5_result,
+                   (a5_result == noErr) ? "OK" : smoke_label(a5_result));
     if (a5_result != noErr) {
         sprintf(title_buf, "MacSSLTest -- mul64 probe FAILED");
         sprintf(line1_buf, "Stage A.5 mul64 FAILED (code %d)",
                 (int)a5_result);
         sprintf(line2_buf, "Gate: %s", smoke_label(a5_result));
         show_result_and_wait(title_buf, line1_buf, line2_buf);
+        OSTLS_LogClose();
         return 0;
     }
 
@@ -359,13 +374,19 @@ main(void)
      * Pure in-memory; does not touch OT. If this fails the link is
      * fine but BearSSL itself can't get out of the starting blocks.
      */
+    OSTLS_LogLine("Stage A    BearSSL smoke            ...");
     a_result = OSTLS_SmokeTest();
+    OSTLS_LogLinef("Stage A    BearSSL smoke            -> code=%d %s",
+                   (int)a_result,
+                   (a_result == noErr) ? "OK (engine reports SENDREC)"
+                                       : smoke_label(a_result));
     if (a_result != noErr) {
         sprintf(title_buf, "MacSSLTest -- Stage A smoke FAILED");
         sprintf(line1_buf, "Stage A smoke FAILED (code %d)",
                 (int)a_result);
         sprintf(line2_buf, "Gate: %s", smoke_label(a_result));
         show_result_and_wait(title_buf, line1_buf, line2_buf);
+        OSTLS_LogClose();
         return 0;
     }
 
@@ -376,7 +397,11 @@ main(void)
      * "no OT on this machine" result doesn't get conflated with "OT
      * fine, but this host is unreachable".
      */
+    OSTLS_LogLine("OT init    InitOpenTransportInContext...");
     ot_init_status = ostls_ot_init();
+    OSTLS_LogLinef("OT init    InitOpenTransportInContext-> ot_err=%ld%s",
+                   (long)ot_init_status,
+                   (ot_init_status == noErr) ? " OK" : " FAIL");
     if (ot_init_status != noErr) {
         sprintf(title_buf, "MacSSLTest -- OT init FAILED");
         sprintf(line1_buf,
@@ -385,10 +410,15 @@ main(void)
         sprintf(line2_buf,
                 "Stage A + A.5 OK; OT unavailable so B1 was skipped.");
         show_result_and_wait(title_buf, line1_buf, line2_buf);
+        OSTLS_LogClose();
         return 0;
     }
 
+    OSTLS_LogLinef("Stage B1   OT TCP connect target=%s ...",
+                   OSTLS_B1_TARGET);
     b1_result = OSTLS_B1_TCP_Probe(OSTLS_B1_TARGET, b1_msg, sizeof b1_msg);
+    OSTLS_LogLinef("Stage B1   OT TCP connect           -> code=%d %s",
+                   (int)b1_result, b1_msg);
 
     if (b1_result != kOSTLSB1_OK) {
         sprintf(title_buf, "MacSSLTest -- Stage B1 FAILED");
@@ -399,6 +429,7 @@ main(void)
                 smoke_label(b1_result), OSTLS_B1_TARGET);
         show_result_and_wait(title_buf, line1_buf, line2_buf);
         ostls_ot_close();
+        OSTLS_LogClose();
         return 0;
     }
 
@@ -412,9 +443,13 @@ main(void)
         OSErr b2_result;
         char  b2_msg[180];
 
+        OSTLS_LogLinef("Stage B2   TLS handshake (insecure) target=%s ...",
+                       OSTLS_B2_TARGET);
         b2_result = OSTLS_B2_Handshake_Probe(
             OSTLS_B2_TARGET, OSTLS_B2_SERVERNAME,
             b2_msg, sizeof b2_msg);
+        OSTLS_LogLinef("Stage B2   TLS handshake (insecure) -> code=%d %s",
+                       (int)b2_result, b2_msg);
 
         if (b2_result != kOSTLSB2_OK) {
             sprintf(title_buf, "MacSSLTest -- Stage B2 FAILED");
@@ -425,6 +460,7 @@ main(void)
                 smoke_label(b2_result), OSTLS_B2_TARGET);
             show_result_and_wait(title_buf, line1_buf, line2_buf);
             ostls_ot_close();
+            OSTLS_LogClose();
             return 0;
         }
     }
@@ -440,15 +476,21 @@ main(void)
         OSErr b3_result;
         char  b3_msg[180];
 
+        OSTLS_LogLinef("Stage B3   TLS handshake (validated) target=%s ...",
+                       OSTLS_B3_TARGET);
         b3_result = OSTLS_B3_Validated_Probe(
             OSTLS_B3_TARGET, OSTLS_B3_SERVERNAME,
             b3_msg, sizeof b3_msg);
+        OSTLS_LogLinef("Stage B3   TLS handshake (validated) -> code=%d %s",
+                       (int)b3_result, b3_msg);
 
         if (b3_result == kOSTLSB3_OK) {
             sprintf(title_buf, "MacSSLTest -- A..B3 OK (validated TLS)");
             sprintf(line1_buf, "%.140s", b3_msg);
             sprintf(line2_buf,
                 "B2 (insecure) OK; B3 chain validated vs embedded roots.");
+            OSTLS_LogBlank();
+            OSTLS_LogLine("==== ALL STAGES OK ====");
         } else {
             sprintf(title_buf, "MacSSLTest -- Stage B3 FAILED");
             sprintf(line1_buf, "Stage B3 FAILED (code %d): %.140s",
@@ -456,11 +498,15 @@ main(void)
             sprintf(line2_buf,
                 "Gate: %s (target=%s)",
                 smoke_label(b3_result), OSTLS_B3_TARGET);
+            OSTLS_LogBlank();
+            OSTLS_LogLinef("==== Stage B3 FAILED (code=%d) ====",
+                           (int)b3_result);
         }
     }
 
     show_result_and_wait(title_buf, line1_buf, line2_buf);
 
     ostls_ot_close();
+    OSTLS_LogClose();
     return 0;
 }
