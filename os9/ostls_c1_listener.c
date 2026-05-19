@@ -77,8 +77,25 @@ typedef long OTEventCode;
 typedef void (*OTNotifyProcPtr)(void *, OTEventCode, OTResult, void *);
 #define T_BINDCOMPLETE 4
 #define kOTNoError 0
+#define kDefaultInetInterface 0
+typedef struct {
+    InetHost fAddress;
+    InetHost fNetmask;
+    InetHost fBroadcastAddr;
+    InetHost fDefaultGatewayAddr;
+    InetHost fDNSAddr;
+    unsigned short fVersion;
+    unsigned short fHWAddrLen;
+    unsigned char *fHWAddr;
+    unsigned long fIfMTU;
+    unsigned char *fReservedPtrs[2];
+    char fDomainName[256];
+    unsigned long fIPSecondaryCount;
+    unsigned char fReserved[252];
+} InetInterfaceInfo;
 static OSStatus OTInstallNotifier(EndpointRef e, OTNotifyProcPtr p, void *c){(void)e;(void)p;(void)c;return noErr;}
 static OSStatus OTSetAsynchronous(EndpointRef e){(void)e;return noErr;}
+static OSStatus OTInetGetInterfaceInfo(InetInterfaceInfo *info, long which){(void)info;(void)which;return noErr;}
 static unsigned long TickCount(void){return 0;}
 extern void *g_ostls_ot_context;
 #endif
@@ -234,18 +251,35 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                        (long)ep_info.flags);
     }
     /*
+     * Diagnostic: query the IP stack's current interface info BEFORE
+     * binding. The OT documentation says kOTBadAddressErr from OTBind
+     * for TCP means "the address does not exist in the specified
+     * domain" -- in practical terms, the IP stack has no interface
+     * configured for the address we asked for. If fAddress == 0 here,
+     * the TCP/IP control panel isn't fully up and INADDR_ANY has
+     * literally no domain to bind to. (Outbound B1-B4 succeeds anyway
+     * because OTConnect resolves through DNS / OT's outbound path
+     * which doesn't validate the local bind address the same way.)
+     */
+    {
+        InetInterfaceInfo ifc;
+        OSStatus iferr;
+        OTMemzero(&ifc, sizeof ifc);
+        iferr = OTInetGetInterfaceInfo(&ifc, kDefaultInetInterface);
+        OSTLS_LogLinef("C1 diag    OTInetGetInterfaceInfo err=%ld fAddress=0x%08lX",
+                       (long)iferr, (unsigned long)ifc.fAddress);
+        OSTLS_LogLinef("C1 diag      netmask=0x%08lX gateway=0x%08lX dns=0x%08lX",
+                       (unsigned long)ifc.fNetmask,
+                       (unsigned long)ifc.fDefaultGatewayAddr,
+                       (unsigned long)ifc.fDNSAddr);
+    }
+
+    /*
      * Install the bind-completion notifier first. We then switch
      * to async mode so OTBind goes through OT's async dispatch
      * path -- five rounds of sync OTBind returned -3150 against
      * textbook-correct addresses; the only major behavioural
      * difference vs. Apple's working sample is the sync wrapper.
-     * The hypothesis is that CarbonLib's sync OT bind rejects
-     * passive endpoints (qlen >= 1) outright, while async bind
-     * dispatches through a different code path that accepts them.
-     *
-     * After bind completes via the notifier, we'll switch back to
-     * sync mode for OTListen / OTAccept / OTRcv -- those have
-     * always worked sync in the outbound code paths.
      */
     g_c1_bind_complete = 0;
     g_c1_bind_result   = 0;
@@ -386,6 +420,27 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                        (long)g_c1_last_event, (long)g_c1_bind_result);
 
         if (g_c1_bind_result != noErr) {
+            /*
+             * Fallback diagnostic: try OTBind(ep, NULL, NULL) on the
+             * SAME endpoint. NULL,NULL gives qlen=0 + OT-assigned
+             * local address -- effectively a client-style bind. If
+             * this succeeds, the endpoint itself is bindable and the
+             * issue is specifically passive (qlen >= 1) + explicit
+             * address. If THIS also fails -3150, the endpoint can't
+             * be bound at all and the failure is deeper than our
+             * code path.
+             *
+             * Switch back to sync mode for this probe since async
+             * notifier already returned the real bind failure above.
+             */
+            OSStatus probe_err;
+            OTSetSynchronous(listener_ep);
+            probe_err = OTBind(listener_ep, NULL, NULL);
+            OSTLS_LogLinef("C1 diag    fallback OTBind(NULL,NULL) err=%ld %s",
+                           (long)probe_err,
+                           probe_err == noErr ? "(endpoint bindable in client mode)" :
+                                                "(endpoint refuses any bind)");
+
             c1_status(out_msg, out_msg_len,
                       "C1: OTBind async FAIL",
                       (long)g_c1_bind_result);
