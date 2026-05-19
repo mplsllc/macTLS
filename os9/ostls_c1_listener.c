@@ -203,20 +203,24 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                       (InetHost)0UL);
 
     /*
-     * Bind REQUEST side. Per TN1145 the request side carries:
-     *   - addr.buf -> InetAddress
-     *   - addr.len  = sizeof(InetAddress)
-     *   - qlen      = N (10 in TN1145; 1 is what we want)
+     * Bind REQUEST side. Set BOTH len AND maxlen to sizeof(InetAddress).
      *
-     * NOTE: req.addr.maxlen is NOT set. maxlen is a RETURN field --
-     * it tells OT how big the caller's buffer is for the actual
-     * bound address. On the request side it's meaningless; the
-     * OTMemzero above leaves it 0 which is what TN1145 has.
+     * TN1145 prose says "maxlen is ignored on input for the request
+     * address" -- that's technically true per the OT spec, BUT Apple's
+     * own DTS HTTP Server sample (Vinnie Moscaritolo's TAddr::ToNetbuf
+     * in /Networking/Http_Server.sit) sets maxlen = sizeof(InetAddress)
+     * = 16 on the request side too. Some OT STREAMS plumbing validates
+     * len <= maxlen, and when len=16, maxlen=0 the check fails with
+     * kOTBadAddressErr (-3150).
+     *
+     * The previous round (fixes26) was wrong to take TN1145 literally.
+     * Apple's actual working code is the authoritative reference.
      */
     OTMemzero(&bind_req, sizeof bind_req);
-    bind_req.addr.buf = (UInt8 *)&local_addr;
-    bind_req.addr.len = (OTByteCount)sizeof local_addr;
-    bind_req.qlen     = 1L;
+    bind_req.addr.buf    = (UInt8 *)&local_addr;
+    bind_req.addr.len    = (OTByteCount)sizeof local_addr;
+    bind_req.addr.maxlen = (OTByteCount)sizeof local_addr;
+    bind_req.qlen        = 1L;
 
     /*
      * Diagnostic: log the exact bytes we're handing OT before the
