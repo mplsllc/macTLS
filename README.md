@@ -10,6 +10,59 @@ This is a **system-wide service**, not a library that any specific
 browser is forced to link. Classilla, iCab, MacSurf, and anything else
 that honours HTTP proxy configuration gets HTTPS for free.
 
+## Is this safe?
+
+**No.** This is a hobby and research project. macSSL has not been
+audited by a security expert and there is no expectation that it
+should be trusted with anything sensitive. The author and contributors
+make no warranty of correctness, security, or fitness for any
+purpose; see [LICENSE](LICENSE) for the full MIT disclaimer.
+
+Mac OS 9 itself predates almost every modern OS-level security
+mechanism — no enforced memory protection between apps, no ASLR, no
+privilege separation, a network stack from a different threat era.
+Even when the TLS layer works correctly the host platform is soft in
+ways no one has fully catalogued. Don't use macSSL for anything
+you'd regret losing. The right framing is "now my hobbyist OS 9
+browser can render modern HTTPS pages," not "now my OS 9 machine is
+ready for online banking."
+
+In particular, the Stage A entropy source is **intentionally
+insecure** (a few weak Toolbox time/jitter sources packed into 32
+bytes — just enough to satisfy BearSSL's entropy gate). Replacing it
+with proper mouse-delta / key-jitter / OT-notifier-tick / persisted-
+seed gathering is required before any user-facing HTTPS shipping. See
+[docs/macssl-integration-notes.md](docs/macssl-integration-notes.md)
+§3 for the plan.
+
+## Prior art
+
+[**Certainly**](https://github.com/minorbug/certainly) by minorbug is
+an independent and substantial implementation of the same idea — TLS
+on classic Mac OS 9, BearSSL + Open Transport, with embedded trust
+anchors. Certainly ships as a library built with Retro68 (GCC 12,
+C99), exposes a non-blocking pump-loop public API, and includes a
+hand-written TLS 1.3 path that falls back to BearSSL's TLS 1.2 engine.
+
+macSSL diverges deliberately on two axes:
+
+- **Toolchain.** macSSL builds with **CodeWarrior 8 + C89** because
+  the primary downstream consumer is MacSurf, which is itself a CW8
+  project; sharing a toolchain keeps integration painless. Certainly's
+  Retro68 path is a clean alternative for projects that don't need
+  CW8 compatibility.
+- **Shape.** macSSL ships as a **standalone Carbon proxy app** that
+  any OS 9 browser configures as its HTTP proxy. Certainly is a
+  library that an app links against. The two shapes serve different
+  audiences — system-wide service vs. per-app linkage — and can
+  coexist on the same machine.
+
+Certainly was a load-bearing reference for the Stage B3 embedded
+trust-anchor set (the 10 roots in `os9/ostls_b3_anchors.c` are the
+same set Certainly uses) and the async-OT integration pattern that
+macSSL's MacSurf-side wiring will adopt at Stage C. Credit to
+minorbug for publishing the work openly.
+
 ```
 Classic browser / OS 9 app
         |  plain HTTP proxy request
