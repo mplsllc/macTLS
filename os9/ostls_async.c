@@ -191,6 +191,17 @@ struct OSTLSConnection {
     unsigned char write_buf[OSTLS_WRITE_BUF_SIZE];
     UInt32        write_pos;
     UInt32        write_avail;
+
+    /* ----- Diagnostic counters (exposed via OSTLS_GetDiagnostics) ----- */
+    UInt32 dbg_ot_send_calls;
+    UInt32 dbg_ot_send_bytes;
+    UInt32 dbg_ot_send_zero;    /* OTSnd returned 0 (try again)        */
+    UInt32 dbg_ot_send_flow;    /* OTSnd returned kOTFlowErr           */
+    UInt32 dbg_ot_recv_calls;
+    UInt32 dbg_ot_recv_bytes;
+    UInt32 dbg_ot_recv_nodata;  /* OTRcv returned kOTNoDataErr         */
+    UInt32 dbg_pump_calls;
+    UInt32 br_state_last;       /* last br_ssl_engine_current_state    */
 };
 
 
@@ -669,9 +680,11 @@ pump_ot_recv_into_bearssl(OSTLSConnection *conn)
     if (rlen == 0) return 0;
 
     got = OTRcv(conn->ep, rbuf, (long)rlen, NULL);
+    conn->dbg_ot_recv_calls++;
     if (got > 0) {
         br_ssl_engine_recvrec_ack(&conn->sc.eng, (size_t)got);
         conn->nf_data_pending = false;  /* drained for now */
+        conn->dbg_ot_recv_bytes += (UInt32)got;
         return 1;
     }
     if (got == 0) {
@@ -681,6 +694,7 @@ pump_ot_recv_into_bearssl(OSTLSConnection *conn)
     }
     if (got == kOTNoDataErr) {
         conn->nf_data_pending = false;
+        conn->dbg_ot_recv_nodata++;
         return 0;
     }
     if (got == kOTLookErr) {
@@ -709,15 +723,19 @@ pump_ot_send_from_bearssl(OSTLSConnection *conn)
     if (slen == 0) return 0;
 
     sent = OTSnd(conn->ep, sbuf, (long)slen, 0);
+    conn->dbg_ot_send_calls++;
     if (sent >= 0) {
         if ((size_t)sent > 0) {
             br_ssl_engine_sendrec_ack(&conn->sc.eng, (size_t)sent);
+            conn->dbg_ot_send_bytes += (UInt32)sent;
             return 1;
         }
+        conn->dbg_ot_send_zero++;
         return 0;
     }
     if (sent == kOTFlowErr) {
         /* OT send buffer full; try again next tick. */
+        conn->dbg_ot_send_flow++;
         return 0;
     }
     if (sent == kOTLookErr) {
@@ -923,6 +941,12 @@ OSTLS_Pump(OSTLSConnection *conn, UInt32 max_steps, OSTLSEvent *out_event)
     if (out_event != NULL) *out_event = kOSTLSEventNone;
     if (conn == NULL) return (OSErr)kOSTLSAsync_BadArgs;
     if (conn->disposed) return (OSErr)kOSTLSAsync_Disposed;
+
+    conn->dbg_pump_calls++;
+    if (conn->bearssl_initialised) {
+        conn->br_state_last =
+            (UInt32)br_ssl_engine_current_state(&conn->sc.eng);
+    }
 
     best_event = kOSTLSEventNone;
     steps_used = 0;
@@ -1155,18 +1179,36 @@ OSTLS_GetDiagnostics(OSTLSConnection *conn,
 {
     if (out_diag == NULL) return;
     if (conn == NULL || conn->disposed) {
-        out_diag->os_err       = (OSErr)kOSTLSAsync_Disposed;
-        out_diag->ot_err       = noErr;
-        out_diag->br_err       = 0;
-        out_diag->state        = kOSTLSStateFailed;
-        out_diag->cipher_suite = 0;
+        out_diag->os_err         = (OSErr)kOSTLSAsync_Disposed;
+        out_diag->ot_err         = noErr;
+        out_diag->br_err         = 0;
+        out_diag->state          = kOSTLSStateFailed;
+        out_diag->cipher_suite   = 0;
+        out_diag->ot_send_calls  = 0;
+        out_diag->ot_send_bytes  = 0;
+        out_diag->ot_send_zero   = 0;
+        out_diag->ot_send_flow   = 0;
+        out_diag->ot_recv_calls  = 0;
+        out_diag->ot_recv_bytes  = 0;
+        out_diag->ot_recv_nodata = 0;
+        out_diag->pump_calls     = 0;
+        out_diag->br_state_last  = 0;
         return;
     }
-    out_diag->os_err       = conn->os_err;
-    out_diag->ot_err       = conn->ot_err;
-    out_diag->br_err       = conn->br_err;
-    out_diag->state        = conn->state;
-    out_diag->cipher_suite = conn->cipher_suite;
+    out_diag->os_err         = conn->os_err;
+    out_diag->ot_err         = conn->ot_err;
+    out_diag->br_err         = conn->br_err;
+    out_diag->state          = conn->state;
+    out_diag->cipher_suite   = conn->cipher_suite;
+    out_diag->ot_send_calls  = conn->dbg_ot_send_calls;
+    out_diag->ot_send_bytes  = conn->dbg_ot_send_bytes;
+    out_diag->ot_send_zero   = conn->dbg_ot_send_zero;
+    out_diag->ot_send_flow   = conn->dbg_ot_send_flow;
+    out_diag->ot_recv_calls  = conn->dbg_ot_recv_calls;
+    out_diag->ot_recv_bytes  = conn->dbg_ot_recv_bytes;
+    out_diag->ot_recv_nodata = conn->dbg_ot_recv_nodata;
+    out_diag->pump_calls     = conn->dbg_pump_calls;
+    out_diag->br_state_last  = conn->br_state_last;
 }
 
 void *

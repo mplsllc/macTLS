@@ -792,7 +792,27 @@ main(void)
 
         while (!done) {
             if ((UInt32)TickCount() > pump_deadline) {
-                sprintf(d2_msg, "D2 overall deadline exceeded");
+                OSTLSDiagnostics diag;
+                OSTLS_GetDiagnostics(conn, &diag);
+                OSTLS_LogLinef(
+                    "D2 stall  pump=%lu st=%d br=0x%lX "
+                    "snd_calls=%lu snd_bytes=%lu snd_zero=%lu snd_flow=%lu",
+                    (unsigned long)pump_count,
+                    (int)diag.state,
+                    (unsigned long)diag.br_state_last,
+                    (unsigned long)diag.ot_send_calls,
+                    (unsigned long)diag.ot_send_bytes,
+                    (unsigned long)diag.ot_send_zero,
+                    (unsigned long)diag.ot_send_flow);
+                OSTLS_LogLinef(
+                    "D2 stall  rcv_calls=%lu rcv_bytes=%lu rcv_nodata=%lu",
+                    (unsigned long)diag.ot_recv_calls,
+                    (unsigned long)diag.ot_recv_bytes,
+                    (unsigned long)diag.ot_recv_nodata);
+                sprintf(d2_msg, "D2 deadline pump=%lu br=0x%lX rcv=%lu",
+                    (unsigned long)pump_count,
+                    (unsigned long)diag.br_state_last,
+                    (unsigned long)diag.ot_recv_calls);
                 OSTLS_Close(conn);
                 OSTLS_Dispose(conn);
                 d2_err = (OSErr)kOSTLSAsync_HandshakeTimeout;
@@ -801,6 +821,24 @@ main(void)
 
             d2_err = OSTLS_Pump(conn, 6, &ev);
             pump_count++;
+
+            /* Periodic progress log (every ~10s at 60 Hz with 1-tick
+             * yields below). Helps diagnose stalls without spamming. */
+            if ((pump_count % 600UL) == 0UL) {
+                OSTLSDiagnostics diag;
+                OSTLS_GetDiagnostics(conn, &diag);
+                OSTLS_LogLinef(
+                    "D2 tick   pump=%lu st=%d br=0x%lX "
+                    "snd=%lu/%luB rcv=%lu/%luB nodata=%lu",
+                    (unsigned long)pump_count,
+                    (int)diag.state,
+                    (unsigned long)diag.br_state_last,
+                    (unsigned long)diag.ot_send_calls,
+                    (unsigned long)diag.ot_send_bytes,
+                    (unsigned long)diag.ot_recv_calls,
+                    (unsigned long)diag.ot_recv_bytes,
+                    (unsigned long)diag.ot_recv_nodata);
+            }
 
             /* Yield so Carbon's OT deferred tasks get CPU time --
              * without this, OTSnd queues the request but the OT

@@ -115,6 +115,17 @@ typedef struct OSTLSDiagnostics {
     int        br_err;          /* BR_ERR_* if TLS-side failure        */
     OSTLSState state;
     UInt16     cipher_suite;    /* 0 until handshake completes         */
+
+    /* Counters for diagnosing stalls. Reset implicitly at OSTLS_New. */
+    UInt32 ot_send_calls;
+    UInt32 ot_send_bytes;
+    UInt32 ot_send_zero;        /* OTSnd returned 0 (try again)        */
+    UInt32 ot_send_flow;        /* OTSnd returned kOTFlowErr           */
+    UInt32 ot_recv_calls;
+    UInt32 ot_recv_bytes;
+    UInt32 ot_recv_nodata;      /* OTRcv returned kOTNoDataErr         */
+    UInt32 pump_calls;
+    UInt32 br_state_last;       /* last br_ssl_engine_current_state    */
 } OSTLSDiagnostics;
 
 /*
