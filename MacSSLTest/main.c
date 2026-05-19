@@ -801,6 +801,17 @@ main(void)
 
             d2_err = OSTLS_Pump(conn, 6, &ev);
             pump_count++;
+
+            /* Yield so Carbon's OT deferred tasks get CPU time --
+             * without this, OTSnd queues the request but the OT
+             * stack never actually transmits it, and OTRcv never
+             * sees the reply. The library's design assumes the
+             * caller runs a WaitNextEvent loop between Pumps. */
+            {
+                EventRecord nullev;
+                WaitNextEvent(everyEvent, &nullev, 1, NULL);
+            }
+
             if (d2_err != kOSTLSAsync_OK) {
                 sprintf(d2_msg, "OSTLS_Pump FAIL code=%d", (int)d2_err);
                 OSTLS_Close(conn);
