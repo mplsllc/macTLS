@@ -124,17 +124,23 @@ OSTLS_C1_Listener_Probe(unsigned short port,
 
     /* ----- 1. Open listener endpoint -----
      *
-     * The protocol-stack string for a TCP LISTENER must include the
-     * "tilisten" module on top of "tcp". Plain "tcp" gives you an
-     * outbound (client) endpoint; OTBind with qlen >= 1 against a
-     * plain "tcp" endpoint returns kOTBadAddressErr (-3150) because
-     * the underlying provider has no passive-open semantics. The
-     * tilisten module wraps tcp with listen / accept primitives.
+     * Plain "tcp" -- NOT "tilisten,tcp". Apple TN1145
+     * ("Living in a Dynamic TCP/IP Environment") shows the canonical
+     * OT TCP server bind in DoIncomingBindOT, and it uses plain
+     * "tcp" for the listener. tilisten is a Solaris-derived STREAMS
+     * connection-orderer module; on classic Mac OS its presence
+     * in the stack actually breaks passive binds because it
+     * rewrites the address-format expectations on its lower service
+     * interface. The "passive" behavior of an OT TCP endpoint comes
+     * from qlen >= 1 at bind time, not from a different protocol
+     * module on top.
      *
-     * Outbound endpoints elsewhere in this project (B1, B2, B3, B4)
-     * correctly use just "tcp" because they only OTConnect.
+     * Earlier rounds (fixes16 plain "tcp", fixes21 "tilisten,tcp")
+     * both failed with -3150 -- the protocol string wasn't the
+     * issue, but tilisten was definitely the wrong path. Going
+     * back to plain "tcp" with the corrected bind request below.
      */
-    cfg_listener = OTCreateConfiguration("tilisten,tcp");
+    cfg_listener = OTCreateConfiguration("tcp");
     if (cfg_listener == NULL || cfg_listener == (OTConfigurationRef)-1L) {
         c1_status(out_msg, out_msg_len,
             "C1: OTCreateConfiguration FAIL (listener)", 0);
@@ -185,33 +191,32 @@ OSTLS_C1_Listener_Probe(unsigned short port,
 
     OTMemzero(&local_addr, sizeof local_addr);
     /*
-     * Probe with port=0 (let OT assign) instead of the requested
-     * port. Two prior runs proved a textbook-clean InetAddress with
-     * an explicit port is still rejected with kOTBadAddressErr; the
-     * endpoint type is correct (T_COTS_ORD), the address bytes are
-     * correct, so the remaining hypothesis is that OT on this Mac
-     * refuses to bind a passive endpoint to a caller-chosen port
-     * and only accepts OS-assigned ephemeral ports.
+     * Mirror Apple TN1145 "DoIncomingBindOT":
+     *   OTInitInetAddress(&reqAddr, port, kOTAnyInetAddress);
      *
-     * If this bind succeeds we know passive bind itself works and
-     * the proxy has to either take OT's assigned port or find an
-     * OT option that re-enables explicit port choice. If this STILL
-     * returns -3150 the problem is more fundamental than port choice
-     * and we're looking at a CarbonLib-vs-classic-OT API gap.
-     *
-     * Bound port is logged via the populated retBind buffer below.
-     * Host stays 127.0.0.1 (loopback) since explicit-local-IP works
-     * everywhere that INADDR_ANY might.
+     * kOTAnyInetAddress (0) is the bind-any address. Earlier rounds
+     * tried 127.0.0.1 — TN1145 explicitly says some OT TCP stack
+     * revisions reject loopback on the passive bind path because
+     * that address isn't on a real interface alias at bind time.
      */
-    (void)port;        /* deliberately ignored for this probe */
-    OTInitInetAddress(&local_addr, (InetPort)0,
-                      (InetHost)0x7F000001UL);
+    OTInitInetAddress(&local_addr, (InetPort)port,
+                      (InetHost)0UL);
 
+    /*
+     * Bind REQUEST side. Per TN1145 the request side carries:
+     *   - addr.buf -> InetAddress
+     *   - addr.len  = sizeof(InetAddress)
+     *   - qlen      = N (10 in TN1145; 1 is what we want)
+     *
+     * NOTE: req.addr.maxlen is NOT set. maxlen is a RETURN field --
+     * it tells OT how big the caller's buffer is for the actual
+     * bound address. On the request side it's meaningless; the
+     * OTMemzero above leaves it 0 which is what TN1145 has.
+     */
     OTMemzero(&bind_req, sizeof bind_req);
-    bind_req.addr.buf    = (UInt8 *)&local_addr;
-    bind_req.addr.maxlen = (OTByteCount)sizeof local_addr;
-    bind_req.addr.len    = (OTByteCount)sizeof local_addr;
-    bind_req.qlen        = 1L;
+    bind_req.addr.buf = (UInt8 *)&local_addr;
+    bind_req.addr.len = (OTByteCount)sizeof local_addr;
+    bind_req.qlen     = 1L;
 
     /*
      * Diagnostic: log the exact bytes we're handing OT before the
