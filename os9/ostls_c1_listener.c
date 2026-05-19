@@ -488,6 +488,55 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                 OSTLS_LogLinef("C1 diag    probeC OTBind(NULL,qlen=1) err=%ld port=%u",
                                (long)probe_err,
                                (unsigned)probeC_bound.fPort);
+                if (probe_err == noErr) {
+                    OTUnbind(listener_ep);
+                }
+            }
+
+            /*
+             * Probe D: bind to the DISCOVERED LAN IP (10.42.0.145 in
+             * this Mac's case), not INADDR_ANY. The OT documentation
+             * for kOTBadAddressErr on TCP literally says "the address
+             * does not exist in the specified domain." INADDR_ANY may
+             * not satisfy that for the InContext path. A real
+             * configured interface address definitely exists.
+             *
+             * The local IP came from the OTInetGetInterfaceInfo call
+             * earlier; re-fetch it here for the probe (interface_info
+             * is local-scope above and not reachable here).
+             */
+            {
+                InetInterfaceInfo ifc;
+                TBind probeD_req;
+                TBind probeD_ret;
+                InetAddress probeD_addr;
+                InetAddress probeD_bound;
+                OSStatus iferr;
+
+                OTMemzero(&ifc, sizeof ifc);
+                iferr = OTInetGetInterfaceInfo(&ifc, kDefaultInetInterface);
+
+                OTMemzero(&probeD_addr, sizeof probeD_addr);
+                OTInitInetAddress(&probeD_addr, (InetPort)port,
+                                  (InetHost)ifc.fAddress);
+
+                OTMemzero(&probeD_req, sizeof probeD_req);
+                probeD_req.addr.buf    = (UInt8 *)&probeD_addr;
+                probeD_req.addr.len    = (OTByteCount)sizeof probeD_addr;
+                probeD_req.addr.maxlen = (OTByteCount)sizeof probeD_addr;
+                probeD_req.qlen        = 1L;
+
+                OTMemzero(&probeD_ret, sizeof probeD_ret);
+                OTMemzero(&probeD_bound, sizeof probeD_bound);
+                probeD_ret.addr.buf    = (UInt8 *)&probeD_bound;
+                probeD_ret.addr.maxlen = (OTByteCount)sizeof probeD_bound;
+
+                OSTLS_LogLinef("C1 diag    probeD bind to fAddress=0x%08lX port=%u",
+                               (unsigned long)ifc.fAddress, (unsigned)port);
+                probe_err = OTBind(listener_ep, &probeD_req, &probeD_ret);
+                OSTLS_LogLinef("C1 diag    probeD OTBind(LAN-IP,qlen=1) err=%ld port=%u",
+                               (long)probe_err,
+                               (unsigned)probeD_bound.fPort);
             }
 
             c1_status(out_msg, out_msg_len,
