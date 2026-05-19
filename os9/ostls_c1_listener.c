@@ -61,6 +61,7 @@ typedef struct {
 #define kAFInet AF_INET
 static OTConfigurationRef OTCreateConfiguration(const char *s){(void)s;return (OTConfigurationRef)1;}
 static EndpointRef OTOpenEndpointInContext(OTConfigurationRef c,unsigned long f,void *p,OSStatus *e,void *x){(void)c;(void)f;(void)p;(void)x;*e=noErr;return (EndpointRef)1;}
+static EndpointRef OTOpenEndpoint(OTConfigurationRef c,unsigned long f,void *p,OSStatus *e){(void)c;(void)f;(void)p;*e=noErr;return (EndpointRef)1;}
 static OSStatus OTSetSynchronous(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTSetBlocking(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTBind(EndpointRef e,TBind *r,TBind *o){(void)e;(void)r;(void)o;return noErr;}
@@ -152,19 +153,26 @@ OSTLS_C1_Listener_Probe(unsigned short port,
         TEndpointInfo ep_info;
         OTMemzero(&ep_info, sizeof ep_info);
         /*
-         * Pass &ep_info so OT fills in the endpoint capabilities.
-         * The key field is `servtype`:
-         *   T_COTS     = 1   connection-oriented, no orderly release
-         *   T_COTS_ORD = 2   connection-oriented + orderly release
-         *                     (TCP-with-FIN; what we want)
-         *   T_CLTS     = 3   connectionless (UDP-like)
-         * Verified on hardware (2026-05-19): tilisten,tcp opens an
-         * endpoint with servtype=2 (T_COTS_ORD) -- the correct kind
-         * for a passive TCP listener. So endpoint type is fine and
-         * the OTBind -3150 failure is not about endpoint-type.
+         * Use OTOpenEndpoint (NOT *InContext) for the listener.
+         *
+         * fixes27 had every other thing matching Apple's HTTP Server
+         * sample letter-for-letter (config "tcp", InetAddress with
+         * fHost=kOTAnyInetAddress, req.addr.{len,maxlen}=16, qlen=1,
+         * populated retBind) and OTBind STILL returned -3150. The
+         * one remaining difference vs. Apple's sample was the
+         * InContext variant of OTOpenEndpoint. Apple's sample uses
+         * plain OTOpenEndpoint throughout; passing through CarbonLib's
+         * InContext wrapper appears to break passive binds even when
+         * outbound paths (B1-B4) work fine through the same wrapper.
+         *
+         * After InitOpenTransportInContext succeeded at startup, the
+         * default OT context is bound to this process anyway, so
+         * OTOpenEndpoint uses it implicitly. The downside is that
+         * we lose explicit-context control for this endpoint -- but
+         * we never needed it, and CarbonLib's docs say the implicit
+         * default is the same context the app already initialised.
          */
-        listener_ep = OTOpenEndpointInContext(cfg_listener, 0, &ep_info,
-                                              &oterr, g_ostls_ot_context);
+        listener_ep = OTOpenEndpoint(cfg_listener, 0, &ep_info, &oterr);
         if (oterr != noErr || listener_ep == NULL) {
             OSTLS_LogLinef("C1 diag    OTOpenEndpoint failed err=%ld",
                            (long)oterr);
@@ -297,8 +305,9 @@ OSTLS_C1_Listener_Probe(unsigned short port,
 
     cfg_child = OTCreateConfiguration("tcp");
     oterr = noErr;
-    child_ep = OTOpenEndpointInContext(cfg_child, 0, NULL,
-                                       &oterr, g_ostls_ot_context);
+    /* Child also opened via the non-InContext entry point, matching
+     * Apple's HTTP Server sample for consistency with the listener. */
+    child_ep = OTOpenEndpoint(cfg_child, 0, NULL, &oterr);
     if (oterr != noErr || child_ep == NULL) {
         c1_status(out_msg, out_msg_len,
             "C1: OTOpenEndpoint FAIL (child)", (long)oterr);
