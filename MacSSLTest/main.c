@@ -53,6 +53,7 @@
 #include "ostls_b2_handshake.h"
 #include "ostls_b3_handshake.h"
 #include "ostls_b4_https_get.h"
+#include "ostls_c1_listener.h"
 #include "ostls_log.h"
 
 
@@ -75,6 +76,14 @@
 #define OSTLS_B4_TARGET     "google.com:443"
 #define OSTLS_B4_SERVERNAME "google.com"
 #define OSTLS_B4_REQPATH    "/"
+
+/*
+ * Stage C1 listens on this port for one incoming TCP connection.
+ * 8765 matches the convention MacSurf already uses for its HTTP proxy
+ * so once Stage C ships the operator can point any classic browser
+ * at the same port without retraining.
+ */
+#define OSTLS_C1_PORT       8765
 
 
 /*
@@ -195,6 +204,16 @@ smoke_label(OSErr code)
     case kOSTLSB4_BearSSLError:            return "B4 BearSSL engine error";
     case kOSTLSB4_RequestTooBig:           return "B4 request too big for sendapp buf";
     case kOSTLSB4_NoBytesReceived:         return "B4 peer closed before any plaintext";
+    case kOSTLSC1_BadArgs:                 return "C1 bad args";
+    case kOSTLSC1_OTConfigFail:            return "C1 OTCreateConfiguration failed";
+    case kOSTLSC1_OTOpenEndptFail:         return "C1 OTOpenEndpoint failed (listener)";
+    case kOSTLSC1_OTBindFail:              return "C1 OTBind failed (port in use?)";
+    case kOSTLSC1_OTListenFail:            return "C1 OTListen failed";
+    case kOSTLSC1_OTAcceptOpenFail:        return "C1 OTOpenEndpoint failed (child)";
+    case kOSTLSC1_OTAcceptBindFail:        return "C1 OTBind failed (child)";
+    case kOSTLSC1_OTAcceptFail:            return "C1 OTAccept failed";
+    case kOSTLSC1_OTRcvFail:               return "C1 OTRcv failed";
+    case kOSTLSC1_PeerClosedEmpty:         return "C1 peer connected but sent nothing";
     }
     return "unknown failure";
 }
@@ -542,31 +561,7 @@ main(void)
         OSTLS_LogLinef("Stage B4   HTTPS GET                -> code=%d %s",
                        (int)b4_result, b4_msg);
 
-        if (b4_result == kOSTLSB4_OK) {
-            /* Show the first ~48 bytes of the response prefix in
-             * the window's line 1 so the user sees real HTTP. */
-            char short_prefix[60];
-            size_t i;
-            size_t n = strlen(b4_prefix);
-            if (n > sizeof short_prefix - 4) {
-                n = sizeof short_prefix - 4;
-            }
-            for (i = 0; i < n; i++) {
-                unsigned char c = (unsigned char)b4_prefix[i];
-                if (c == '\r' || c == '\n' || c < 0x20 || c >= 0x7F) {
-                    short_prefix[i] = ' ';
-                } else {
-                    short_prefix[i] = (char)c;
-                }
-            }
-            short_prefix[n] = '\0';
-
-            sprintf(title_buf, "MacSSLTest -- A..B4 OK (HTTPS GET)");
-            sprintf(line1_buf, "%.140s", b4_msg);
-            sprintf(line2_buf, "Resp: %.140s", short_prefix);
-            OSTLS_LogBlank();
-            OSTLS_LogLine("==== ALL STAGES OK ====");
-        } else {
+        if (b4_result != kOSTLSB4_OK) {
             sprintf(title_buf, "MacSSLTest -- Stage B4 FAILED");
             sprintf(line1_buf, "Stage B4 FAILED (code %d): %.140s",
                 (int)b4_result, b4_msg);
@@ -576,6 +571,103 @@ main(void)
             OSTLS_LogBlank();
             OSTLS_LogLinef("==== Stage B4 FAILED (code=%d) ====",
                            (int)b4_result);
+            show_result_and_wait(title_buf, line1_buf, line2_buf);
+            ostls_ot_close();
+            OSTLS_LogClose();
+            return 0;
+        }
+    }
+
+    /*
+     * Stage C1: open a TCP listener on OSTLS_C1_PORT and accept a
+     * single inbound connection. The UI freezes during OTListen
+     * because we're in synchronous + blocking mode -- this is
+     * acceptable for the gate. The log line below is written + flushed
+     * BEFORE the freeze, so an operator pulling MacSSLTest.log can
+     * confirm the listener is up and waiting.
+     *
+     * To trigger the accept on the same Mac:
+     *   telnet localhost 8765
+     *   <type "GET /test HTTP/1.0" + RETURN twice + ctrl-]> quit
+     *
+     * From another machine on the LAN:
+     *   nc <mac-ip> 8765
+     *   <type anything> ctrl-D
+     */
+    {
+        OSErr c1_result;
+        char  c1_msg[180];
+        char  c1_request[256];
+
+        OSTLS_LogLinef("Stage C1   listening on port %u ...",
+                       (unsigned)OSTLS_C1_PORT);
+        OSTLS_LogLine("           (UI is frozen until a client connects)");
+
+        c1_result = OSTLS_C1_Listener_Probe(
+            (unsigned short)OSTLS_C1_PORT,
+            c1_request, sizeof c1_request,
+            c1_msg, sizeof c1_msg);
+
+        OSTLS_LogLinef("Stage C1   listener result          -> code=%d %s",
+                       (int)c1_result, c1_msg);
+
+        if (c1_result == kOSTLSC1_OK) {
+            char short_req[80];
+            size_t i;
+            size_t n = strlen(c1_request);
+            if (n > sizeof short_req - 4) {
+                n = sizeof short_req - 4;
+            }
+            for (i = 0; i < n; i++) {
+                unsigned char c = (unsigned char)c1_request[i];
+                if (c == '\r' || c == '\n' || c < 0x20 || c >= 0x7F) {
+                    short_req[i] = ' ';
+                } else {
+                    short_req[i] = (char)c;
+                }
+            }
+            short_req[n] = '\0';
+
+            /* Log the full request body with escape-rendered control
+             * chars so it survives unbroken to the file log. */
+            {
+                char dbg[320];
+                size_t pos;
+                size_t j;
+                pos = (size_t)sprintf(dbg, "Stage C1   request bytes [%lu]: ",
+                                      (unsigned long)n);
+                for (j = 0; j < n && pos < sizeof dbg - 4; j++) {
+                    unsigned char c = (unsigned char)c1_request[j];
+                    if (c == 0x0D) {
+                        dbg[pos++] = '\\';
+                        dbg[pos++] = 'r';
+                    } else if (c == 0x0A) {
+                        dbg[pos++] = '\\';
+                        dbg[pos++] = 'n';
+                    } else if (c >= 0x20 && c < 0x7F) {
+                        dbg[pos++] = (char)c;
+                    } else {
+                        dbg[pos++] = '?';
+                    }
+                }
+                dbg[pos] = '\0';
+                OSTLS_LogLine(dbg);
+            }
+
+            sprintf(title_buf, "MacSSLTest -- A..C1 OK");
+            sprintf(line1_buf, "%.140s", c1_msg);
+            sprintf(line2_buf, "Req: %.140s", short_req);
+            OSTLS_LogBlank();
+            OSTLS_LogLine("==== ALL STAGES OK ====");
+        } else {
+            sprintf(title_buf, "MacSSLTest -- Stage C1 FAILED");
+            sprintf(line1_buf, "Stage C1 FAILED (code %d): %.140s",
+                (int)c1_result, c1_msg);
+            sprintf(line2_buf, "Gate: %s (port=%u)",
+                smoke_label(c1_result), (unsigned)OSTLS_C1_PORT);
+            OSTLS_LogBlank();
+            OSTLS_LogLinef("==== Stage C1 FAILED (code=%d) ====",
+                           (int)c1_result);
         }
     }
 
