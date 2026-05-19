@@ -1,14 +1,43 @@
-# macSSL
+# macSSL v0.1
 
-Native TLS for Mac OS 9, built on **BearSSL**, shipping as a standalone
-**local HTTP proxy Carbon app** that any OS 9 browser can configure as
-its HTTP proxy. The proxy strips TLS on behalf of clients: it accepts
-plain HTTP, fetches the upstream over HTTPS via BearSSL + Open
-Transport, and returns plain HTTP to the caller.
+Native TLS for classic Mac OS 9 / PowerPC, built on **BearSSL** over
+**Open Transport**. macSSL ships as a **static C library** that host
+apps link directly. The single public entry point performs a
+validated HTTPS GET and returns decrypted response bytes to the
+caller. No proxy app, no listener, no port configuration.
 
-This is a **system-wide service**, not a library that any specific
-browser is forced to link. Classilla, iCab, MacSurf, and anything else
-that honours HTTP proxy configuration gets HTTPS for free.
+## Status
+
+```
+TLS 1.2 validated handshake               working
+ECDHE-ECDSA + ChaCha20-Poly1305           working
+X.509 validation with embedded anchors    working (10 roots embedded)
+HTTPS GET via OSTLS_Fetch()               working — verified on G3 / OS 9.1
+Local proxy/listener mode                 abandoned (Carbon CFM OTBind limit)
+Production entropy                        pending — Stage A insecure stub still in place
+MacSurf integration                       next downstream task (in MacSurf repo)
+```
+
+Verified on real Power Macintosh G3 / Mac OS 9.1, CodeWarrior 8 Pro,
+Carbon CFM. The validated handshake against `google.com:443`
+negotiates TLS 1.2 cipher suite `0xCCA9`
+(`TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256`), chains through
+the embedded GTS Root R4 (EC P-384), and returns the decrypted
+HTTP 301 response byte-for-byte. Full run log archived at
+[`docs/runs/2026-05-19-b4-google-ok.txt`](docs/runs/2026-05-19-b4-google-ok.txt).
+
+**This is not yet production crypto.** Validated TLS transport is
+functional; **production randomness is not**. The Stage A entropy
+source mixes a few weak Toolbox sources (TickCount, Microseconds,
+stack address) into a 32-byte buffer just enough to satisfy
+BearSSL's entropy gate. Session keys derived from it are predictable
+to an attacker who can capture handshake traffic. macSSL is therefore
+suitable as a research / hobbyist HTTPS transport, not as a security
+claim for end users. Replacing the entropy stub with real mouse-delta
+/ key-jitter / OT-notifier-tick gathering plus a persisted seed file
+is the prerequisite for any user-facing security claim. See
+[`docs/macssl-integration-notes.md`](docs/macssl-integration-notes.md)
+§3 for the plan.
 
 ## Is this safe?
 
@@ -151,13 +180,11 @@ That last row is what macSSL is for. The other rows are reference
 points that say the components work; the assembly is novel.
 
 ```
-Classic browser / OS 9 app
-        |  plain HTTP proxy request
-        v
-   127.0.0.1:8765
+Host app (MacSurf, etc.)
         |
+        |  OSTLS_Fetch(host, port, server_name, path, ...)
         v
-   MacSSL Proxy (this project, Carbon app)
+   macSSL library (this project, linked into host)
         |  Open Transport TCP
         v
    BearSSL TLS client
@@ -165,6 +192,11 @@ Classic browser / OS 9 app
         v
    remote HTTPS server
 ```
+
+*The original "local proxy app at 127.0.0.1:8765" architecture was
+abandoned at v0.1 after 14 rounds proved Carbon CFM cannot
+passive-bind to caller-chosen addresses
+([investigation report](docs/carbon-ot-passive-bind-finding.md)).*
 
 ## Current status (2026-05-19)
 
