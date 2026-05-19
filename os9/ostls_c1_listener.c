@@ -23,6 +23,7 @@
  */
 
 #include "ostls_c1_listener.h"
+#include "ostls_log.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -158,11 +159,60 @@ OSTLS_C1_Listener_Probe(unsigned short port,
     bind_req.addr.len    = (OTByteCount)sizeof local_addr;
     bind_req.qlen        = 1L;
 
-    oterr = OTBind(listener_ep, &bind_req, NULL);
-    if (oterr != noErr) {
-        c1_status(out_msg, out_msg_len, "C1: OTBind FAIL", (long)oterr);
-        OTCloseProvider(listener_ep);
-        return (OSErr)kOSTLSC1_OTBindFail;
+    /*
+     * Diagnostic: log the exact bytes we're handing OT before the
+     * bind call. Two consecutive -3150 (kOTBadAddressErr) failures
+     * on hardware after the tilisten-vs-tcp switch made the address
+     * itself the next suspect. The log line shows sizeof's plus the
+     * 16-byte InetAddress layout so we can confirm fAddressType,
+     * fPort and fHost are what we believe we wrote.
+     */
+    {
+        const unsigned char *p = (const unsigned char *)&local_addr;
+        OSTLS_LogLinef("C1 diag    sizeof(InetAddress)=%lu sizeof(TBind)=%lu qlen=%ld",
+                       (unsigned long)sizeof local_addr,
+                       (unsigned long)sizeof bind_req,
+                       (long)bind_req.qlen);
+        OSTLS_LogLinef("C1 diag    addr.maxlen=%ld addr.len=%ld addr.buf=%p",
+                       (long)bind_req.addr.maxlen,
+                       (long)bind_req.addr.len,
+                       (void *)bind_req.addr.buf);
+        OSTLS_LogLinef("C1 diag    addr[0-7]  %02X %02X %02X %02X %02X %02X %02X %02X",
+                       (unsigned)p[0], (unsigned)p[1], (unsigned)p[2], (unsigned)p[3],
+                       (unsigned)p[4], (unsigned)p[5], (unsigned)p[6], (unsigned)p[7]);
+        OSTLS_LogLinef("C1 diag    addr[8-15] %02X %02X %02X %02X %02X %02X %02X %02X",
+                       (unsigned)p[8],  (unsigned)p[9],  (unsigned)p[10], (unsigned)p[11],
+                       (unsigned)p[12], (unsigned)p[13], (unsigned)p[14], (unsigned)p[15]);
+    }
+
+    /*
+     * Provide a returned-bind buffer rather than NULL. Some classic
+     * OT versions document NULL as acceptable but reject it in
+     * practice for passive (qlen >= 1) binds; supplying a valid
+     * sink for the actual-bound-address write costs us 24 bytes of
+     * stack and removes one ambiguity from the failure modes.
+     */
+    {
+        TBind bind_ret;
+        InetAddress bound_addr;
+        OTMemzero(&bind_ret, sizeof bind_ret);
+        OTMemzero(&bound_addr, sizeof bound_addr);
+        bind_ret.addr.buf    = (UInt8 *)&bound_addr;
+        bind_ret.addr.maxlen = (OTByteCount)sizeof bound_addr;
+        bind_ret.addr.len    = 0;
+
+        oterr = OTBind(listener_ep, &bind_req, &bind_ret);
+        if (oterr != noErr) {
+            OSTLS_LogLinef("C1 diag    OTBind returned err=%ld", (long)oterr);
+            c1_status(out_msg, out_msg_len, "C1: OTBind FAIL", (long)oterr);
+            OTCloseProvider(listener_ep);
+            return (OSErr)kOSTLSC1_OTBindFail;
+        }
+        /* Log what we actually got bound to so we can see whether OT
+         * picked the port we requested or assigned a different one. */
+        OSTLS_LogLinef("C1 diag    OTBind OK actual port=%u host=0x%08lX",
+                       (unsigned)bound_addr.fPort,
+                       (unsigned long)bound_addr.fHost);
     }
 
     /* ----- 3. OTListen -- blocks until a peer arrives ----- */
