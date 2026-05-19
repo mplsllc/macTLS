@@ -22,11 +22,75 @@
 
 #include "macssltest_prefix.h"
 
-#include <Carbon.h>
+/*
+ * Avoid the <Carbon.h> umbrella. Carbon.h chains through CoreServices.h
+ * which pulls in Threads.h. On CW8 installations where the Java SDK
+ * support folder is on the system search path, a HotSpot JVM Threads.h
+ * can be found before Apple's, producing a cascade of JVM-internal
+ * errors (oobj.h, typedefs.h, winnt.h, winbase.h ...). Including the
+ * specific Toolbox headers we actually need avoids that chain entirely
+ * and is also faster to compile.
+ */
+#include <Quickdraw.h>
+#include <Windows.h>
+#include <Events.h>
+#include <Fonts.h>
+#include <Gestalt.h>
+#include <Sound.h>
+#ifdef __MWERKS__
+#include <Appearance.h>     /* CarbonLib only; absent from Retro68 pre-flight */
+#include <Files.h>          /* Open Transport pulls in Files types */
+#include <OpenTransport.h>  /* InitOpenTransportInContext / OTClientContextPtr */
+#include <OpenTptInternet.h>/* TCP configuration constants */
+#endif
+
 #include <stdio.h>
 #include <string.h>
 
 #include "ostls_smoketest.h"
+#include "ostls_mul64_probe.h"
+#include "ostls_b1_tcp.h"
+#include "ostls_b2_handshake.h"
+#include "ostls_b3_handshake.h"
+
+
+/*
+ * Stage B targets.
+ *   B1 (TCP only):           example.com:443 -- public TCP sanity check
+ *   B2 (insecure handshake): example.com:443 -- isolates the record I/O
+ *                            loop from any validation question
+ *   B3 (validated handshake): google.com:443 -- chains through GTS Root R1
+ *                             (or GTS Root R4 for the ECDSA path), both
+ *                             embedded in ostls_b3_anchors. Picked over
+ *                             example.com so we're validating macSSL's
+ *                             X.509 path, not chasing IANA cert rotation.
+ */
+#define OSTLS_B1_TARGET     "example.com:443"
+#define OSTLS_B2_TARGET     "example.com:443"
+#define OSTLS_B2_SERVERNAME "example.com"
+#define OSTLS_B3_TARGET     "google.com:443"
+#define OSTLS_B3_SERVERNAME "google.com"
+
+
+/*
+ * Open Transport client context, populated by InitOpenTransportInContext
+ * at startup and torn down at shutdown. The B1 probe and any later
+ * Stage B code that opens endpoints reference this via
+ *   extern OTClientContextPtr g_ostls_ot_context;
+ * in their own source files.
+ *
+ * CW8's OT headers don't always define kInitOTForApplicationMask; per
+ * the MacSurf workaround we pin it to the documented bit value when
+ * the macro is missing.
+ */
+#ifdef __MWERKS__
+OTClientContextPtr g_ostls_ot_context = NULL;
+#ifndef kInitOTForApplicationMask
+#define kInitOTForApplicationMask 0x00000002L
+#endif
+#else
+void *g_ostls_ot_context = NULL;
+#endif
 
 
 /* ------------------------------------------------------------------- */
@@ -51,18 +115,66 @@ c_to_pstr(const char *src, Str255 dst)
 
 
 /*
- * Decode an OSTLS smoke-test result code into a human-readable label.
- * Codes correspond to kOSTLSSmoke* in os9/ostls_smoketest.h.
+ * Decode an OSTLS smoke-test or Mul64-probe result code into a
+ * human-readable label. Codes correspond to kOSTLSSmoke* in
+ * os9/ostls_smoketest.h and kOSTLSMul64* in os9/ostls_mul64_probe.h.
  */
 static const char *
 smoke_label(OSErr code)
 {
     switch ((short)code) {
-    case noErr:                         return "OK";
-    case kOSTLSSmokeBadEngineAfterReset: return "engine error after reset";
-    case kOSTLSSmokeNoSendrecAfterReset: return "engine not asking to send";
-    case kOSTLSSmokeClientResetReturned0: return "br_ssl_client_reset = 0";
-    case kOSTLSSmokeEntropyInjectFailed: return "entropy inject failed";
+    case noErr:                            return "OK";
+    case kOSTLSSmokeBadEngineAfterReset:   return "engine error after reset";
+    case kOSTLSSmokeNoSendrecAfterReset:   return "engine not asking to send";
+    case kOSTLSSmokeClientResetReturned0:  return "br_ssl_client_reset = 0";
+    case kOSTLSSmokeEntropyInjectFailed:   return "entropy inject failed";
+    case kOSTLSMul64FailA_Raw:             return "mul64 A raw -- 0x12345678 * 0x9ABCDEF0";
+    case kOSTLSMul64FailA_CT:              return "mul64 A CT  -- |0x80000000 pattern A";
+    case kOSTLSMul64FailB_Raw:             return "mul64 B raw -- 0x7FFFFFFF^2";
+    case kOSTLSMul64FailB_CT:              return "mul64 B CT  -- |0x80000000 pattern B";
+    case kOSTLSMul64FailC_Raw:             return "mul64 C raw -- 0x00010001^2";
+    case kOSTLSMul64FailC_CT:              return "mul64 C CT  -- |0x80000000 pattern C";
+    case kOSTLSMul64FailD_Raw:             return "mul64 D raw -- 0xDEADBEEF * 0xCAFEBABE";
+    case kOSTLSMul64FailD_CT:              return "mul64 D CT  -- |0x80000000 pattern D";
+    case kOSTLSB1_BadArgs:                 return "B1 bad args";
+    case kOSTLSB1_OTConfigFail:            return "B1 OTCreateConfiguration failed";
+    case kOSTLSB1_OTOpenEndptFail:         return "B1 OTOpenEndpointInContext failed";
+    case kOSTLSB1_OTBindFail:              return "B1 OTBind failed";
+    case kOSTLSB1_OTDnsAddrFail:           return "B1 OTInitDNSAddress failed";
+    case kOSTLSB1_OTConnectFail:           return "B1 OTConnect failed";
+    case kOSTLSB2_BadArgs:                 return "B2 bad args";
+    case kOSTLSB2_OTConfigFail:            return "B2 OTCreateConfiguration failed";
+    case kOSTLSB2_OTOpenEndptFail:         return "B2 OTOpenEndpoint failed";
+    case kOSTLSB2_OTBindFail:              return "B2 OTBind failed";
+    case kOSTLSB2_OTDnsAddrFail:           return "B2 OTInitDNSAddress failed";
+    case kOSTLSB2_OTConnectFail:           return "B2 OTConnect failed";
+    case kOSTLSB2_EntropyFail:             return "B2 entropy inject failed";
+    case kOSTLSB2_ClientResetFail:         return "B2 br_ssl_client_reset failed";
+    case kOSTLSB2_OTSndFail:               return "B2 OTSnd failed mid-handshake";
+    case kOSTLSB2_OTRcvFail:               return "B2 OTRcv failed mid-handshake";
+    case kOSTLSB2_PeerClosedEarly:         return "B2 peer closed before handshake";
+    case kOSTLSB2_HandshakeTimeout:        return "B2 handshake timed out (60s)";
+    case kOSTLSB2_BearSSLError:            return "B2 BearSSL engine error";
+    case kOSTLSB3_BadArgs:                 return "B3 bad args";
+    case kOSTLSB3_ClockBefore2000:         return "B3 system clock before 2000";
+    case kOSTLSB3_OTConfigFail:            return "B3 OTCreateConfiguration failed";
+    case kOSTLSB3_OTOpenEndptFail:         return "B3 OTOpenEndpoint failed";
+    case kOSTLSB3_OTBindFail:              return "B3 OTBind failed";
+    case kOSTLSB3_OTDnsAddrFail:           return "B3 OTInitDNSAddress failed";
+    case kOSTLSB3_OTConnectFail:           return "B3 OTConnect failed";
+    case kOSTLSB3_EntropyFail:             return "B3 entropy inject failed";
+    case kOSTLSB3_ClientResetFail:         return "B3 br_ssl_client_reset failed";
+    case kOSTLSB3_OTSndFail:               return "B3 OTSnd failed mid-handshake";
+    case kOSTLSB3_OTRcvFail:               return "B3 OTRcv failed mid-handshake";
+    case kOSTLSB3_PeerClosedEarly:         return "B3 peer closed before handshake";
+    case kOSTLSB3_HandshakeTimeout:        return "B3 handshake timed out";
+    case kOSTLSB3_X509NotTrusted:          return "B3 X509 unknown CA / chain not trusted";
+    case kOSTLSB3_X509Expired:             return "B3 X509 cert expired / not yet valid";
+    case kOSTLSB3_X509HostnameMismatch:    return "B3 X509 hostname mismatch";
+    case kOSTLSB3_X509BadSignature:        return "B3 X509 bad signature";
+    case kOSTLSB3_X509TimeUnknown:         return "B3 X509 time unknown (clock?)";
+    case kOSTLSB3_X509Other:               return "B3 X509 other validation error";
+    case kOSTLSB3_BearSSLError:            return "B3 BearSSL engine error";
     }
     return "unknown failure";
 }
@@ -106,11 +218,13 @@ toolbox_init(void)
  * Open a single modeless window, draw the result, and pump events
  * until the user clicks or types. No menu bar, no fancy chrome.
  *
- * The window is also given a meaningful title so the user can see the
- * verdict in the title bar before even looking at the content.
+ * Caller supplies the three text lines and the title. main() owns the
+ * stage-result logic; this function just renders.
  */
 static void
-show_result_and_wait(OSErr code)
+show_result_and_wait(const char *title_c,
+                     const char *line1_c,
+                     const char *line2_c)
 {
     WindowRef win;
     Rect bounds;
@@ -120,20 +234,10 @@ show_result_and_wait(OSErr code)
     Str255 line1;
     Str255 line2;
     Str255 line3;
-    char buf[128];
 
-    /* Build the four pascal-strings we'll display. */
-    if (code == noErr) {
-        c_to_pstr("MacSSLTest -- smoke OK", title);
-        c_to_pstr("macSSL Stage A smoke: OK", line1);
-        c_to_pstr("BearSSL initialised; engine reports SENDREC.", line2);
-    } else {
-        c_to_pstr("MacSSLTest -- smoke FAILED", title);
-        sprintf(buf, "macSSL Stage A smoke: FAILED (code %d)", (int)code);
-        c_to_pstr(buf, line1);
-        sprintf(buf, "Gate: %s", smoke_label(code));
-        c_to_pstr(buf, line2);
-    }
+    c_to_pstr(title_c, title);
+    c_to_pstr(line1_c, line1);
+    c_to_pstr(line2_c, line2);
     c_to_pstr("Click mouse or press any key to quit.", line3);
 
     /* Open the window. */
@@ -189,13 +293,174 @@ show_result_and_wait(OSErr code)
 /* Entry point                                                         */
 /* ------------------------------------------------------------------- */
 
+/*
+ * Open Transport lifecycle. Initialised once at startup, closed once at
+ * shutdown. The B1 probe (and any subsequent Stage B work) opens its
+ * own endpoints against this context. Failure is non-fatal -- we still
+ * run the in-memory probes (A.5, A) so the user sees a useful result
+ * window even on a machine where OT is missing or broken.
+ */
+static OSStatus
+ostls_ot_init(void)
+{
+#ifdef __MWERKS__
+    return InitOpenTransportInContext(kInitOTForApplicationMask,
+                                      &g_ostls_ot_context);
+#else
+    return 0;
+#endif
+}
+
+static void
+ostls_ot_close(void)
+{
+#ifdef __MWERKS__
+    if (g_ostls_ot_context != NULL) {
+        CloseOpenTransportInContext(g_ostls_ot_context);
+        g_ostls_ot_context = NULL;
+    }
+#endif
+}
+
+
 int
 main(void)
 {
-    OSErr smoke;
+    OSErr     a5_result;
+    OSErr     a_result;
+    OSErr     b1_result;
+    OSStatus  ot_init_status;
+    char      b1_msg[160];
+    char      line1_buf[200];
+    char      line2_buf[200];
+    char      title_buf[80];
 
     toolbox_init();
-    smoke = OSTLS_SmokeTest();
-    show_result_and_wait(smoke);
+
+    b1_msg[0] = '\0';
+
+    /*
+     * Stage A.5: 32x32->64 multiply codegen probe. If the underlying
+     * arithmetic is wrong on this hardware, every Stage A or Stage B
+     * pass below would be meaningless. Probe the kernel first.
+     */
+    a5_result = OSTLS_Mul64Probe();
+    if (a5_result != noErr) {
+        sprintf(title_buf, "MacSSLTest -- mul64 probe FAILED");
+        sprintf(line1_buf, "Stage A.5 mul64 FAILED (code %d)",
+                (int)a5_result);
+        sprintf(line2_buf, "Gate: %s", smoke_label(a5_result));
+        show_result_and_wait(title_buf, line1_buf, line2_buf);
+        return 0;
+    }
+
+    /*
+     * Stage A: BearSSL build / init / state machine reaches SENDREC.
+     * Pure in-memory; does not touch OT. If this fails the link is
+     * fine but BearSSL itself can't get out of the starting blocks.
+     */
+    a_result = OSTLS_SmokeTest();
+    if (a_result != noErr) {
+        sprintf(title_buf, "MacSSLTest -- Stage A smoke FAILED");
+        sprintf(line1_buf, "Stage A smoke FAILED (code %d)",
+                (int)a_result);
+        sprintf(line2_buf, "Gate: %s", smoke_label(a_result));
+        show_result_and_wait(title_buf, line1_buf, line2_buf);
+        return 0;
+    }
+
+    /*
+     * Stage B1: raw Open Transport TCP connect probe. First time this
+     * binary touches the network. OT must be initialised before the
+     * probe runs; we report initialisation failure distinctly so a
+     * "no OT on this machine" result doesn't get conflated with "OT
+     * fine, but this host is unreachable".
+     */
+    ot_init_status = ostls_ot_init();
+    if (ot_init_status != noErr) {
+        sprintf(title_buf, "MacSSLTest -- OT init FAILED");
+        sprintf(line1_buf,
+                "InitOpenTransportInContext FAILED (ot_err=%ld)",
+                (long)ot_init_status);
+        sprintf(line2_buf,
+                "Stage A + A.5 OK; OT unavailable so B1 was skipped.");
+        show_result_and_wait(title_buf, line1_buf, line2_buf);
+        return 0;
+    }
+
+    b1_result = OSTLS_B1_TCP_Probe(OSTLS_B1_TARGET, b1_msg, sizeof b1_msg);
+
+    if (b1_result != kOSTLSB1_OK) {
+        sprintf(title_buf, "MacSSLTest -- Stage B1 FAILED");
+        sprintf(line1_buf, "Stage B1 FAILED (code %d): %.140s",
+                (int)b1_result, b1_msg);
+        sprintf(line2_buf,
+                "Gate: %s (target=%s)",
+                smoke_label(b1_result), OSTLS_B1_TARGET);
+        show_result_and_wait(title_buf, line1_buf, line2_buf);
+        ostls_ot_close();
+        return 0;
+    }
+
+    /*
+     * Stage B2: BearSSL handshake (insecure validator) over OT against
+     * the same target. First time TLS bytes actually flow on this
+     * platform. Uses gB2-static contexts so the partition footprint is
+     * predictable up front.
+     */
+    {
+        OSErr b2_result;
+        char  b2_msg[180];
+
+        b2_result = OSTLS_B2_Handshake_Probe(
+            OSTLS_B2_TARGET, OSTLS_B2_SERVERNAME,
+            b2_msg, sizeof b2_msg);
+
+        if (b2_result != kOSTLSB2_OK) {
+            sprintf(title_buf, "MacSSLTest -- Stage B2 FAILED");
+            sprintf(line1_buf, "Stage B2 FAILED (code %d): %.140s",
+                (int)b2_result, b2_msg);
+            sprintf(line2_buf,
+                "Gate: %s (target=%s)",
+                smoke_label(b2_result), OSTLS_B2_TARGET);
+            show_result_and_wait(title_buf, line1_buf, line2_buf);
+            ostls_ot_close();
+            return 0;
+        }
+    }
+
+    /*
+     * Stage B3: validated TLS handshake against google.com:443. Real
+     * br_x509_minimal with embedded trust anchors and the Mac system
+     * clock fed in. Failures here distinguish CA / expiry / hostname
+     * / clock / signature errors via dedicated result codes so the
+     * window points at exactly which validation gate broke.
+     */
+    {
+        OSErr b3_result;
+        char  b3_msg[180];
+
+        b3_result = OSTLS_B3_Validated_Probe(
+            OSTLS_B3_TARGET, OSTLS_B3_SERVERNAME,
+            b3_msg, sizeof b3_msg);
+
+        if (b3_result == kOSTLSB3_OK) {
+            sprintf(title_buf, "MacSSLTest -- A..B3 OK (validated TLS)");
+            sprintf(line1_buf, "%.140s", b3_msg);
+            sprintf(line2_buf,
+                "B2 (insecure) OK; B3 chain validated vs embedded roots.");
+        } else {
+            sprintf(title_buf, "MacSSLTest -- Stage B3 FAILED");
+            sprintf(line1_buf, "Stage B3 FAILED (code %d): %.140s",
+                (int)b3_result, b3_msg);
+            sprintf(line2_buf,
+                "Gate: %s (target=%s)",
+                smoke_label(b3_result), OSTLS_B3_TARGET);
+        }
+    }
+
+    show_result_and_wait(title_buf, line1_buf, line2_buf);
+
+    ostls_ot_close();
     return 0;
 }
