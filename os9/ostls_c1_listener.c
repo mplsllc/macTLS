@@ -48,7 +48,7 @@ typedef struct { TNetbuf addr; TNetbuf opt; long qlen; } TBind;
 typedef struct { TNetbuf addr; TNetbuf opt; TNetbuf udata; long sequence; } TCall;
 typedef struct {
     long addr, options, tsdu, etsdu, connect, discon;
-    long servtype, flags, qlen;
+    long servtype, flags;
 } TEndpointInfo;
 typedef struct {
     unsigned short fAddressType;
@@ -145,11 +145,19 @@ OSTLS_C1_Listener_Probe(unsigned short port,
     {
         TEndpointInfo ep_info;
         OTMemzero(&ep_info, sizeof ep_info);
-        /* Pass &ep_info so OT fills in the endpoint capabilities.
-         * info.qlen is the maximum bind qlen this endpoint can
-         * accept; if it's 0, OTBind with qlen >= 1 will always
-         * fail with kOTBadAddressErr regardless of how clean the
-         * address is. */
+        /*
+         * Pass &ep_info so OT fills in the endpoint capabilities.
+         * The key field is `servtype` -- it tells us what KIND of
+         * endpoint OT actually opened:
+         *   T_COTS     = 1   connection-oriented, no orderly release
+         *                     (can't do passive bind cleanly)
+         *   T_CLTS     = 2   connectionless (UDP-like)
+         *   T_COTS_ORD = 3   connection-oriented + orderly release
+         *                     (TCP-with-FIN; what we want for a listener)
+         * If servtype is anything other than T_COTS_ORD, the
+         * tilisten,tcp config didn't give us a proper passive TCP
+         * endpoint and OTBind with qlen >= 1 won't work.
+         */
         listener_ep = OTOpenEndpointInContext(cfg_listener, 0, &ep_info,
                                               &oterr, g_ostls_ot_context);
         if (oterr != noErr || listener_ep == NULL) {
@@ -167,10 +175,9 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                        (long)ep_info.etsdu,
                        (long)ep_info.connect,
                        (long)ep_info.discon);
-        OSTLS_LogLinef("C1 diag    endpoint info: servtype=%ld flags=0x%lX qlen=%ld",
+        OSTLS_LogLinef("C1 diag    endpoint info: servtype=%ld (3=T_COTS_ORD) flags=0x%lX",
                        (long)ep_info.servtype,
-                       (long)ep_info.flags,
-                       (long)ep_info.qlen);
+                       (long)ep_info.flags);
     }
     OTSetSynchronous(listener_ep);
     OTSetBlocking(listener_ep);
