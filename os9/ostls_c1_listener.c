@@ -147,16 +147,15 @@ OSTLS_C1_Listener_Probe(unsigned short port,
         OTMemzero(&ep_info, sizeof ep_info);
         /*
          * Pass &ep_info so OT fills in the endpoint capabilities.
-         * The key field is `servtype` -- it tells us what KIND of
-         * endpoint OT actually opened:
+         * The key field is `servtype`:
          *   T_COTS     = 1   connection-oriented, no orderly release
-         *                     (can't do passive bind cleanly)
-         *   T_CLTS     = 2   connectionless (UDP-like)
-         *   T_COTS_ORD = 3   connection-oriented + orderly release
-         *                     (TCP-with-FIN; what we want for a listener)
-         * If servtype is anything other than T_COTS_ORD, the
-         * tilisten,tcp config didn't give us a proper passive TCP
-         * endpoint and OTBind with qlen >= 1 won't work.
+         *   T_COTS_ORD = 2   connection-oriented + orderly release
+         *                     (TCP-with-FIN; what we want)
+         *   T_CLTS     = 3   connectionless (UDP-like)
+         * Verified on hardware (2026-05-19): tilisten,tcp opens an
+         * endpoint with servtype=2 (T_COTS_ORD) -- the correct kind
+         * for a passive TCP listener. So endpoint type is fine and
+         * the OTBind -3150 failure is not about endpoint-type.
          */
         listener_ep = OTOpenEndpointInContext(cfg_listener, 0, &ep_info,
                                               &oterr, g_ostls_ot_context);
@@ -175,7 +174,7 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                        (long)ep_info.etsdu,
                        (long)ep_info.connect,
                        (long)ep_info.discon);
-        OSTLS_LogLinef("C1 diag    endpoint info: servtype=%ld (3=T_COTS_ORD) flags=0x%lX",
+        OSTLS_LogLinef("C1 diag    endpoint info: servtype=%ld (2=T_COTS_ORD) flags=0x%lX",
                        (long)ep_info.servtype,
                        (long)ep_info.flags);
     }
@@ -186,19 +185,26 @@ OSTLS_C1_Listener_Probe(unsigned short port,
 
     OTMemzero(&local_addr, sizeof local_addr);
     /*
-     * Bind to 127.0.0.1 explicitly rather than INADDR_ANY (0).
-     * Apple's OT documentation says 0 means "any local IP," but
-     * some classic OT configurations require a concrete configured
-     * interface address and reject 0 with kOTBadAddressErr. Loopback
-     * is always present on a working IP stack, so binding to it is
-     * the safest single-address test.
+     * Probe with port=0 (let OT assign) instead of the requested
+     * port. Two prior runs proved a textbook-clean InetAddress with
+     * an explicit port is still rejected with kOTBadAddressErr; the
+     * endpoint type is correct (T_COTS_ORD), the address bytes are
+     * correct, so the remaining hypothesis is that OT on this Mac
+     * refuses to bind a passive endpoint to a caller-chosen port
+     * and only accepts OS-assigned ephemeral ports.
      *
-     * 127.0.0.1 in host byte order = 0x7F000001 = 2130706433.
-     * For a proxy that wants to accept connections from other Macs
-     * on the LAN, swap this back to INADDR_ANY once the bind path
-     * is known good.
+     * If this bind succeeds we know passive bind itself works and
+     * the proxy has to either take OT's assigned port or find an
+     * OT option that re-enables explicit port choice. If this STILL
+     * returns -3150 the problem is more fundamental than port choice
+     * and we're looking at a CarbonLib-vs-classic-OT API gap.
+     *
+     * Bound port is logged via the populated retBind buffer below.
+     * Host stays 127.0.0.1 (loopback) since explicit-local-IP works
+     * everywhere that INADDR_ANY might.
      */
-    OTInitInetAddress(&local_addr, (InetPort)port,
+    (void)port;        /* deliberately ignored for this probe */
+    OTInitInetAddress(&local_addr, (InetPort)0,
                       (InetHost)0x7F000001UL);
 
     OTMemzero(&bind_req, sizeof bind_req);
