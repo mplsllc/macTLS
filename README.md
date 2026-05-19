@@ -37,78 +37,118 @@ seed gathering is required before any user-facing HTTPS shipping. See
 
 ## Prior art
 
-[**Certainly**](https://github.com/minorbug/certainly) by minorbug is
-an independent and substantial implementation of the same idea — TLS
-on classic Mac OS 9, BearSSL + Open Transport, with embedded trust
-anchors. Certainly ships as a library built with Retro68 (GCC 12,
-C99), exposes a non-blocking pump-loop public API, and includes a
-hand-written TLS 1.3 path that falls back to BearSSL's TLS 1.2 engine.
+There is a small but real ecosystem of TLS-on-classic-Mac projects.
+None of them target the exact niche macSSL is filling — **a native
+Carbon / Open Transport local HTTPS-fetching proxy for arbitrary OS 9
+browsers** — but each is useful as reference material for one or two
+specific design questions. Quick map:
 
-macSSL diverges deliberately on two axes:
+| Project | Crypto lib | Toolchain | Target | Shape | Why it matters here |
+|---|---|---|---|---|---|
+| [**Certainly**](https://github.com/minorbug/certainly) (minorbug) | BearSSL | Retro68 GCC 12, C99 | OS 9 PPC | static library, pump-loop API | Closest sibling: TLS 1.3 + 1.2 on OS 9; the async-OT pattern macSSL will adopt at Stage C |
+| [**MacSSL** (bbenchoff)](https://github.com/bbenchoff/MacSSL) | mbedtls/PolarSSL 2.x | CodeWarrior Pro 4 | OS 7/8/9 (68K+PPC FAT) | one-site Toolbox app | First public CW + Classic Mac TLS demo; C89-porting tax catalogue |
+| [**Crypto Ancienne / cryanc / carl**](https://github.com/classilla/cryanc) (Cameron Kaiser et al.) | TLSe | various pre-C99 compilers, MPW MrC for Classic Mac | many old systems incl. Classic Mac | command-line tool + HTTP/HTTPS proxy mode | The proxy-for-old-browsers idea; known-working with Classilla |
+| [**antscode/mbedtls-Mac-68k**](https://github.com/antscode/mbedtls-Mac-68k) | mbedtls | Retro68 | 68K Macs | static lib | TLS 1.2 perf expectations on slower hardware; mbedtls config trim |
+| [**antscode/MacHTTP**](https://github.com/antscode/MacHTTP) | (uses above) | Retro68, C++ | 68K Macs | HTTP/HTTPS client wrapper | Request/response API shape on top of TLS |
+| [**TLSe**](https://github.com/eduardsui/tlse) (Eduard Suica) | libtomcrypt | host | not Mac-specific | single-C-file TLS 1.0/1.1/1.2/1.3 | Engine behind Crypto Ancienne — useful for comparison, not for use |
 
-- **Toolchain.** macSSL builds with **CodeWarrior 8 + C89** because
-  the primary downstream consumer is MacSurf, which is itself a CW8
-  project; sharing a toolchain keeps integration painless. Certainly's
+### The three that actually inform macSSL's design
+
+**1. [Certainly](https://github.com/minorbug/certainly)** is the
+closest sibling. BearSSL + Open Transport, baked-in trust anchors,
+non-blocking pump-loop public API for the cooperative Toolbox event
+model, TLS 1.3 + 1.2. Built with Retro68/GCC/C99. macSSL diverges
+deliberately on two axes:
+
+- **Toolchain.** macSSL uses **CW8 + C89** because the primary
+  downstream consumer is MacSurf, which is itself a CW8 project;
+  sharing a toolchain keeps integration painless. Certainly's
   Retro68 path is a clean alternative for projects that don't need
   CW8 compatibility.
 - **Shape.** macSSL ships as a **standalone Carbon proxy app** that
   any OS 9 browser configures as its HTTP proxy. Certainly is a
-  library that an app links against. The two shapes serve different
-  audiences — system-wide service vs. per-app linkage — and can
+  library that an app links against. Different audiences; can
   coexist on the same machine.
 
-Certainly was a load-bearing reference for the Stage B3 embedded
-trust-anchor set (the 10 roots in `os9/ostls_b3_anchors.c` are the
-same set Certainly uses) and the async-OT integration pattern that
-macSSL's MacSurf-side wiring will adopt at Stage C. Credit to
-minorbug for publishing the work openly.
+Specific design notes worth stealing later: `ot_transport.c`'s
+notifier-sets-flags / pump-reads-flags split, the `MacTLS_Pump` API
+contract, `tools/generate_ca_roots.sh` (already adopted — our 10
+embedded roots match Certainly's set), the host-side test-vector
+harness for TLS 1.3 key schedule (`tests/host/`), the
+`examples/postman` Toolbox UI as a reference for a full HTTPS
+request builder.
 
-[**MacSSL (bbenchoff)**](https://github.com/bbenchoff/MacSSL) by Brian
-Benchoff is a separate, earlier proof-of-concept that ports
-**mbedtls/PolarSSL 2.x** to classic Mac OS 7/8/9 under **CodeWarrior
-Pro 4**, producing a FAT (68K + PPC) Toolbox app that fetches one
-HTTPS endpoint (`640by480.com`) using TLS 1.1, RSA-AES-CBC, SHA-1
-signatures, and a single hardcoded chain (ISRG Root X1 + Let's
-Encrypt R11). The README explicitly marks the repo as a frozen
-proof-of-concept / template — no further development.
+**2. [bbenchoff/MacSSL](https://github.com/bbenchoff/MacSSL)** is the
+historical "it's possible" demo: C89/C90 port of mbedtls/PolarSSL 2.x
+under CodeWarrior Pro 4, FAT (68K + PPC) Toolbox app fetching one
+hardcoded endpoint over TLS 1.1, RSA-AES-CBC, SHA-1, ISRG X1 + Let's
+Encrypt R11 chain. README explicitly marks the repo as a frozen
+proof-of-concept.
 
-Naming collision is a coincidence: bbenchoff's "MacSSL" (capital M, on
-GitHub since 2024) and this "macSSL" (lowercase m) were named
-independently. They are separate projects with different goals.
+Naming is independent — bbenchoff's "MacSSL" (capital M, GitHub since
+2024) and this "macSSL" (lowercase m) were named without coordination.
+They are different projects.
 
-What's useful from bbenchoff's work, even as cold reference material:
+Useful as cold reference for: validating the path is walkable, and
+documenting the C89 porting tax for a non-C89-clean crypto library
+(variadic macros, hand-emulated 64-bit ints via
+`struct { uint32_t high, low; }`, every operation rewritten). macSSL
+sidesteps the tax entirely by using BearSSL, which is C89-clean as
+shipped. Not useful for code lifting: different crypto library, TLS
+1.1 only (modern endpoints frequently reject), one site, frozen
+repo, and the actual app wrapper / OT glue / entropy mix described
+in the README aren't in the published source tree — they're only in
+the bundled `Archive.sit`.
 
-- Validates that **native TLS on OS 9 via CW8 is possible** — first
-  public demonstration as far as we know. macSSL benefits from the
-  trail being already cut.
-- Documents in detail the **C89 porting tax** for a non-C89-clean
-  crypto library (mbedtls): variadic macros, 64-bit integer
-  emulation via `struct { uint32_t high, low; }`, every operation
-  hand-rewritten. macSSL avoided this entirely by choosing BearSSL,
-  which was C89-clean from the start.
-- The `mac_stdint.h` emulation pattern is an academic reference if
-  anyone ever needs to port a C99 codebase to CW8 again.
+**3. [Crypto Ancienne / cryanc / carl](https://github.com/classilla/cryanc)**
+by Cameron Kaiser (Classilla maintainer) is the closest prior art
+for the **proxy** part of macSSL's plan. Tagline "TLS for the
+Internet of Old Things." Targets pre-C99 compilers and old
+architectures. The `carl` utility has SOCKSv4 support and an
+HTTP/HTTPS proxy mode for old browsers that don't insist on
+`CONNECT`; the README explicitly lists Classilla 9.3.4b among the
+browsers that work against it.
 
-What bbenchoff's MacSSL is **not** useful for in our context:
+That last point is load-bearing for macSSL: **Classilla can drive a
+plain-HTTP-proxy that does TLS upstream**. We don't have to invent
+or speculate that behaviour. The product idea is already validated
+against a real browser, in the wild.
 
-- **Different crypto library** (mbedtls vs BearSSL). No code reuse
-  between them.
-- **TLS 1.1 only** with RSA-AES-CBC and SHA-1 signatures. Modern
-  HTTPS endpoints frequently reject these handshakes; Google,
-  Cloudflare, and major CDNs require TLS 1.2 with AEAD ciphers.
-- **One hardcoded site** (`640by480.com`); not a general-purpose
-  client.
-- **Frozen repository** — no fixes, no anchor rotation.
-- **The actual app/OT/entropy code is in the StuffIt archive**
-  (`Archive.sit`), not in the published source tree. Only the
-  ported mbedtls library compiles unit appears in the GitHub repo;
-  the wrapper and Open Transport glue (`SSLWrapper.c`, the API
-  call, the "mouse jitter + tick + OT timestamp" entropy mix the
-  README describes in prose) are unavailable as source under
-  version control.
+Where Crypto Ancienne diverges from macSSL: its Classic Mac build is
+an **MPW MrC command-line tool using GUSI**, with the README warning
+that MrC can generate incorrect code (optimization disabled to
+mitigate) and that MPW shell stack allotment must be increased. So
+it's a different toolchain, a different runtime model, and a
+different deployment shape (MPW shell tool rather than Carbon
+Toolbox app). macSSL is the **native Carbon / Open Transport** path
+for users who don't want MPW in the loop.
 
-Treat it as a historical reference point and proof that the path is
-walkable, not a source of code to lift.
+### What's not worth chasing
+
+- **OpenSSL on Classic Mac** — too large, depends on POSIX surface
+  that doesn't exist.
+- **GnuTLS, NSS, wolfSSL, MatrixSSL ports** — none have a
+  pre-existing OS 9 port; porting from scratch is more work than
+  using BearSSL.
+- **Apple Keychain / old Security framework APIs** — Carbon-era
+  surface that doesn't reach modern TLS.
+- **Open Transport trap-patching extensions** — a different
+  architectural approach (system-wide TLS interception) that doesn't
+  match the proxy product.
+- **OS X-only proxy tools** — wrong target OS.
+
+### The open niche macSSL is filling
+
+| Capability | Already proven by | Status |
+|---|---|---|
+| Native TLS on OS 9 | bbenchoff, Certainly, this project | proven |
+| TLS 1.3 on OS 9 | Certainly | proven |
+| CW8 + Classic Mac TLS | bbenchoff, this project | proven |
+| Old-browser HTTPS via plain-HTTP proxy | Crypto Ancienne (MPW shell) | partly proven |
+| **Native Carbon / Open Transport local HTTPS-fetching proxy for arbitrary OS 9 browsers** | — | **open** |
+
+That last row is what macSSL is for. The other rows are reference
+points that say the components work; the assembly is novel.
 
 ```
 Classic browser / OS 9 app
