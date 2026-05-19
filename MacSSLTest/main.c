@@ -52,6 +52,7 @@
 #include "ostls_b1_tcp.h"
 #include "ostls_b2_handshake.h"
 #include "ostls_b3_handshake.h"
+#include "ostls_b4_https_get.h"
 #include "ostls_log.h"
 
 
@@ -71,6 +72,9 @@
 #define OSTLS_B2_SERVERNAME "example.com"
 #define OSTLS_B3_TARGET     "google.com:443"
 #define OSTLS_B3_SERVERNAME "google.com"
+#define OSTLS_B4_TARGET     "google.com:443"
+#define OSTLS_B4_SERVERNAME "google.com"
+#define OSTLS_B4_REQPATH    "/"
 
 
 /*
@@ -176,6 +180,21 @@ smoke_label(OSErr code)
     case kOSTLSB3_X509TimeUnknown:         return "B3 X509 time unknown (clock?)";
     case kOSTLSB3_X509Other:               return "B3 X509 other validation error";
     case kOSTLSB3_BearSSLError:            return "B3 BearSSL engine error";
+    case kOSTLSB4_BadArgs:                 return "B4 bad args";
+    case kOSTLSB4_ClockBefore2000:         return "B4 system clock before 2000";
+    case kOSTLSB4_OTConfigFail:            return "B4 OTCreateConfiguration failed";
+    case kOSTLSB4_OTOpenEndptFail:         return "B4 OTOpenEndpoint failed";
+    case kOSTLSB4_OTBindFail:              return "B4 OTBind failed";
+    case kOSTLSB4_OTDnsAddrFail:           return "B4 OTInitDNSAddress failed";
+    case kOSTLSB4_OTConnectFail:           return "B4 OTConnect failed";
+    case kOSTLSB4_EntropyFail:             return "B4 entropy inject failed";
+    case kOSTLSB4_ClientResetFail:         return "B4 br_ssl_client_reset failed";
+    case kOSTLSB4_OTSndFail:               return "B4 OTSnd failed";
+    case kOSTLSB4_OTRcvFail:               return "B4 OTRcv failed";
+    case kOSTLSB4_HandshakeTimeout:        return "B4 handshake/IO timed out";
+    case kOSTLSB4_BearSSLError:            return "B4 BearSSL engine error";
+    case kOSTLSB4_RequestTooBig:           return "B4 request too big for sendapp buf";
+    case kOSTLSB4_NoBytesReceived:         return "B4 peer closed before any plaintext";
     }
     return "unknown failure";
 }
@@ -484,14 +503,7 @@ main(void)
         OSTLS_LogLinef("Stage B3   TLS handshake (validated) -> code=%d %s",
                        (int)b3_result, b3_msg);
 
-        if (b3_result == kOSTLSB3_OK) {
-            sprintf(title_buf, "MacSSLTest -- A..B3 OK (validated TLS)");
-            sprintf(line1_buf, "%.140s", b3_msg);
-            sprintf(line2_buf,
-                "B2 (insecure) OK; B3 chain validated vs embedded roots.");
-            OSTLS_LogBlank();
-            OSTLS_LogLine("==== ALL STAGES OK ====");
-        } else {
+        if (b3_result != kOSTLSB3_OK) {
             sprintf(title_buf, "MacSSLTest -- Stage B3 FAILED");
             sprintf(line1_buf, "Stage B3 FAILED (code %d): %.140s",
                 (int)b3_result, b3_msg);
@@ -501,6 +513,69 @@ main(void)
             OSTLS_LogBlank();
             OSTLS_LogLinef("==== Stage B3 FAILED (code=%d) ====",
                            (int)b3_result);
+            show_result_and_wait(title_buf, line1_buf, line2_buf);
+            ostls_ot_close();
+            OSTLS_LogClose();
+            return 0;
+        }
+    }
+
+    /*
+     * Stage B4: tiny HTTPS GET. Opens a fresh validated session
+     * against google.com:443, sends "GET / HTTP/1.0" with
+     * Connection: close, captures the first 96 bytes of the
+     * decrypted response. The captured prefix is logged with
+     * escaping for control chars so it survives unbroken to the log
+     * file even when the response contains CR/LF.
+     */
+    {
+        OSErr b4_result;
+        char  b4_msg[180];
+        char  b4_prefix[96];
+
+        OSTLS_LogLinef("Stage B4   HTTPS GET %s%s ...",
+                       OSTLS_B4_TARGET, OSTLS_B4_REQPATH);
+        b4_result = OSTLS_B4_HTTPS_Get_Probe(
+            OSTLS_B4_TARGET, OSTLS_B4_SERVERNAME, OSTLS_B4_REQPATH,
+            b4_prefix, sizeof b4_prefix,
+            b4_msg, sizeof b4_msg);
+        OSTLS_LogLinef("Stage B4   HTTPS GET                -> code=%d %s",
+                       (int)b4_result, b4_msg);
+
+        if (b4_result == kOSTLSB4_OK) {
+            /* Show the first ~48 bytes of the response prefix in
+             * the window's line 1 so the user sees real HTTP. */
+            char short_prefix[60];
+            size_t i;
+            size_t n = strlen(b4_prefix);
+            if (n > sizeof short_prefix - 4) {
+                n = sizeof short_prefix - 4;
+            }
+            for (i = 0; i < n; i++) {
+                unsigned char c = (unsigned char)b4_prefix[i];
+                if (c == '\r' || c == '\n' || c < 0x20 || c >= 0x7F) {
+                    short_prefix[i] = ' ';
+                } else {
+                    short_prefix[i] = (char)c;
+                }
+            }
+            short_prefix[n] = '\0';
+
+            sprintf(title_buf, "MacSSLTest -- A..B4 OK (HTTPS GET)");
+            sprintf(line1_buf, "%.140s", b4_msg);
+            sprintf(line2_buf, "Resp: %.140s", short_prefix);
+            OSTLS_LogBlank();
+            OSTLS_LogLine("==== ALL STAGES OK ====");
+        } else {
+            sprintf(title_buf, "MacSSLTest -- Stage B4 FAILED");
+            sprintf(line1_buf, "Stage B4 FAILED (code %d): %.140s",
+                (int)b4_result, b4_msg);
+            sprintf(line2_buf,
+                "Gate: %s (target=%s)",
+                smoke_label(b4_result), OSTLS_B4_TARGET);
+            OSTLS_LogBlank();
+            OSTLS_LogLinef("==== Stage B4 FAILED (code=%d) ====",
+                           (int)b4_result);
         }
     }
 
