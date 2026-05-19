@@ -153,26 +153,14 @@ OSTLS_C1_Listener_Probe(unsigned short port,
         TEndpointInfo ep_info;
         OTMemzero(&ep_info, sizeof ep_info);
         /*
-         * Use OTOpenEndpoint (NOT *InContext) for the listener.
-         *
-         * fixes27 had every other thing matching Apple's HTTP Server
-         * sample letter-for-letter (config "tcp", InetAddress with
-         * fHost=kOTAnyInetAddress, req.addr.{len,maxlen}=16, qlen=1,
-         * populated retBind) and OTBind STILL returned -3150. The
-         * one remaining difference vs. Apple's sample was the
-         * InContext variant of OTOpenEndpoint. Apple's sample uses
-         * plain OTOpenEndpoint throughout; passing through CarbonLib's
-         * InContext wrapper appears to break passive binds even when
-         * outbound paths (B1-B4) work fine through the same wrapper.
-         *
-         * After InitOpenTransportInContext succeeded at startup, the
-         * default OT context is bound to this process anyway, so
-         * OTOpenEndpoint uses it implicitly. The downside is that
-         * we lose explicit-context control for this endpoint -- but
-         * we never needed it, and CarbonLib's docs say the implicit
-         * default is the same context the app already initialised.
+         * Back to OTOpenEndpointInContext -- fixes28 tried plain
+         * OTOpenEndpoint but the Carbon CFM linker can't resolve it
+         * (CarbonLib only exports the InContext variant). The Carbon
+         * application context set up by InitOpenTransportInContext
+         * is what we have to live with.
          */
-        listener_ep = OTOpenEndpoint(cfg_listener, 0, &ep_info, &oterr);
+        listener_ep = OTOpenEndpointInContext(cfg_listener, 0, &ep_info,
+                                              &oterr, g_ostls_ot_context);
         if (oterr != noErr || listener_ep == NULL) {
             OSTLS_LogLinef("C1 diag    OTOpenEndpoint failed err=%ld",
                            (long)oterr);
@@ -192,8 +180,16 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                        (long)ep_info.servtype,
                        (long)ep_info.flags);
     }
+    /*
+     * Sync mode only -- DO NOT call OTSetBlocking. Apple's HTTP Server
+     * sample uses pure async + notifier and never sets "blocking" at
+     * all; the sync+blocking combo is something we only use for
+     * outbound clients (B1-B4). Hypothesis: OTSetBlocking + passive
+     * bind interact badly in CarbonLib's OT wrapper. OTSetSynchronous
+     * alone gives us a sync endpoint without the "block waiting for
+     * data" semantic that blocking adds.
+     */
     OTSetSynchronous(listener_ep);
-    OTSetBlocking(listener_ep);
 
     /* ----- 2. Bind on 0.0.0.0:port with backlog 1 ----- */
 
@@ -305,9 +301,8 @@ OSTLS_C1_Listener_Probe(unsigned short port,
 
     cfg_child = OTCreateConfiguration("tcp");
     oterr = noErr;
-    /* Child also opened via the non-InContext entry point, matching
-     * Apple's HTTP Server sample for consistency with the listener. */
-    child_ep = OTOpenEndpoint(cfg_child, 0, NULL, &oterr);
+    child_ep = OTOpenEndpointInContext(cfg_child, 0, NULL,
+                                       &oterr, g_ostls_ot_context);
     if (oterr != noErr || child_ep == NULL) {
         c1_status(out_msg, out_msg_len,
             "C1: OTOpenEndpoint FAIL (child)", (long)oterr);
