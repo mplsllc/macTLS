@@ -1,15 +1,24 @@
 /*
  * ostls_b3_anchors.h
  *
- * Stage B3 embedded X.509 trust anchors for MacSSLTest. Five
- * well-known root CAs that cover Google, Amazon, Let's Encrypt and
- * DigiCert-signed leaf certificates:
+ * Stage B3 embedded X.509 trust anchors for MacSSLTest. Ten
+ * well-known root CAs that cover Google (RSA + ECDSA chains),
+ * Amazon, Let's Encrypt (RSA + ECDSA), DigiCert (RSA + ECDSA),
+ * and Starfield Services. Set matches the prior-art project
+ * Certainly (https://github.com/minorbug/certainly), which we
+ * adopted after Stage B4 once the architectural pattern was
+ * established:
  *
- *   TA0  Amazon Root CA 1                     RSA-2048   exp 2038-01-17
- *   TA1  DigiCert Global Root G2              RSA-2048   exp 2038-01-15
- *   TA2  GTS Root R1   (Google primary RSA)   RSA-4096   exp 2036-06-22
- *   TA3  GTS Root R4   (Google ECDSA chain)   EC P-384   exp 2036-06-22
- *   TA4  ISRG Root X1  (Let's Encrypt)        RSA-4096   exp 2035-06-04
+ *   TA0  Amazon Root CA 1                      RSA-2048   exp 2038-01-17
+ *   TA1  DigiCert Global Root G2               RSA-2048   exp 2038-01-15
+ *   TA2  GTS Root R1   (Google primary RSA)    RSA-4096   exp 2036-06-22
+ *   TA3  GTS Root R4   (Google ECDSA, P-384)   EC P-384   exp 2036-06-22
+ *   TA4  ISRG Root X1  (Let's Encrypt RSA)     RSA-4096   exp 2035-06-04
+ *   TA5  ISRG Root X2  (Let's Encrypt ECDSA)   EC P-384   exp 2040-09-17
+ *   TA6  GTS Root R2   (Google secondary RSA)  RSA-4096   exp 2036-06-22
+ *   TA7  GTS Root R3   (Google ECDSA)          EC P-384   exp 2036-06-22
+ *   TA8  DigiCert Global Root G3               EC P-384   exp 2038-01-15
+ *   TA9  Starfield Services Root CA G2         RSA-2048   exp 2037-12-31
  *
  * Bytes were extracted from public PEMs via BearSSL's `brssl ta` tool
  * (built from the same vendored 7bea48e5 source tree) on 2026-05-19.
@@ -40,7 +49,7 @@
  */
 #include "bearssl_x509.h"
 
-#define OSTLS_B3_NUM_ANCHORS  5
+#define OSTLS_B3_NUM_ANCHORS  10
 
 /*
  * Return a pointer to the populated, ready-to-use trust-anchor
