@@ -177,8 +177,34 @@ Stage B2  BearSSL insecure handshake        COMPLETE  G3 OS 9.1  (0xCCA9)
 Stage B3  validated TLS via embedded roots  COMPLETE  G3 OS 9.1  (google.com)
 Stage B4  HTTPS GET decrypted end-to-end    COMPLETE  G3 OS 9.1  (95B body)
 Stage B5  MacSurf integration notes (doc)   COMPLETE
-Stage C   local HTTP proxy app              NEXT      (C1 listener -> route -> stream)
+Stage C   local HTTP proxy app              ABANDONED — see below
+Stage D   library mode (link into MacSurf)  NEXT
 ```
+
+### Stage C abandoned — Carbon CFM cannot do passive OTBind
+
+Fourteen hardware iteration rounds (fixes16..fixes34) and a research
+sweep across Apple Tech Notes, Inside Macintosh, the OT result-codes
+appendix, and every preserved Apple sample archive established that
+**`OTOpenEndpointInContext` endpoints categorically reject
+caller-chosen `InetAddress` in `OTBind`**, regardless of port, host,
+qlen, sync vs async, or protocol stack. Only `OTBind(NULL,NULL)` and
+`OTBind({ addr=NULL, qlen=N })` succeed — and the latter binds to
+whatever ephemeral port OT picks (returned 49417 / 49423 / 49433
+across runs).
+
+The "local proxy on port 8765" architecture is impossible on this
+platform. No published Carbon CFM TCP server exists in any archive;
+Apple's own HTTP Server sample is pre-Carbon (uses `OTAsyncOpenEndpoint`
+without `InContext`). Full investigation report:
+[docs/carbon-ot-passive-bind-finding.md](docs/carbon-ot-passive-bind-finding.md).
+
+**The pivot:** macSSL ships as a static C library, MacSurf (and any
+other classic-Mac browser project) links it directly. The Stage B4
+fetch path is the library API surface in waiting. The
+[B5 integration notes](docs/macssl-integration-notes.md) already lay
+out the integration mechanics and the per-fetch memory footprint
+(~50 KB, comfortable in a 16 MB Carbon partition).
 
 **Baseline frozen at Stage B4 — native validated HTTPS GET works on
 real Mac OS 9 PowerPC hardware.** Cipher suite negotiated and accepted
