@@ -551,3 +551,62 @@ wiring + the refactored `OSTLS_Fetch`. Expected output of that
 session: a fixes39-fixes45-ish series ending in a green Stage D2
 hardware run against google.com:443 with the async API explicitly
 exercised.
+
+---
+
+## Amendments after implementation (fixes40..fixes44)
+
+The v0.2 implementation landed across fixes40..fixes43; this
+section records where the as-built code diverges from the design
+above and why.
+
+**`OSTLSConnection` is monolithic (one heap allocation).**
+Internal struct holds the BearSSL contexts, the 33 KB I/O buffer,
+4 KB read ring, 4 KB write queue, all OT stable storage (TBind,
+TCall, InetAddress, DNSAddress, TEndpointInfo), notifier-set
+volatile flags, and string buffers for `host` / `server_name` /
+`host_port`. Allocated via `NewPtrClear`. Total resident memory
+per connection is roughly 50 KB.
+
+**`OSTLS_Fetch` was not refactored onto the async API.** Brief
+listed this as commit step #7 with the caveat "if practical."
+Decision: keep v0.1's `ostls_fetch.{h,c}` independent of v0.2 for
+the first hardware-verification cycle so any regression in either
+path stays distinguishable. If Stage D regresses while Stage D2 is
+green, we know the issue is in the blocking implementation, not
+the async one (and vice versa). The refactor lands when the two
+paths have both been green on hardware for at least one cycle.
+
+**Stage D1 is a separate file (`os9/ostls_d1_probe.{h,c}`)** rather
+than living inside `ostls_async.c`. The D1 probe tests just the
+async-OT layer (no BearSSL); keeping it isolated makes it valid
+prior-art for any future investigation of OT-layer issues.
+
+**Pump precedence as implemented:** Failed > Closed >
+HandshakeDone > Connected > Readable > Writable > None. Matches
+design doc. `event_priority` helper plus `event_bump` for the
+collapse.
+
+**Connect phase substates** (NeedsOpen, OpenInFlight, NeedsBind,
+BindInFlight, NeedsConnect, ConnectInFlight, Done) are internal to
+the .c file. Publicly, `kOSTLSStateConnecting` covers the whole
+arc. The substate lets `pump_connect_step` know what notifier
+event to wait for next without exposing plumbing through the
+public state enum.
+
+**Pre-Start clock check** moved to `OSTLS_Start`. Brief had it
+inside `pump_connect_step`; doing it at Start time is cheaper (one
+syscall up front) and surfaces `kOSTLSAsync_ClockBefore2000` from
+the call that actually represents "start the connection," which
+is more discoverable for the caller.
+
+Result codes namespace bumped to 2000..2017 (was unspecified in
+the brief). Disjoint from v0.1's `kOSTLSFetch_*` (1000..1014) and
+the C1 / D1 probe namespaces (700..709, 800..812).
+
+The MacSSLTest harness gained Stage D1 (after B3) and Stage D2
+(after D). Stage D stays for the blocking regression baseline.
+
+Pending: hardware verification on G3 / OS 9.1. Until both Stage D
+and Stage D2 are green in the same run, v0.2 is "code complete,
+not validated." Tag bump to v0.2.0 holds until then.

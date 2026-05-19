@@ -44,15 +44,25 @@ The library shape works around the platform limit and is arguably the
 better architecture anyway — single function call, no daemon to
 manage, no port to configure.
 
-## What's in v0.1
+## What's in v0.1 and v0.2
 
 ```
-TLS 1.2 validated handshake                 working — verified G3 / OS 9.1
-ECDHE-ECDSA + ChaCha20-Poly1305             working (suite 0xCCA9)
-ECDHE-RSA + AES-GCM (alternate suites)      working
-X.509 chain validation                       working — 10 embedded root CAs
-OS 9 system clock → BearSSL date            working — proleptic Gregorian
-HTTPS GET via OSTLS_Fetch                   working — returns decrypted body
+v0.1 -- blocking API
+  TLS 1.2 validated handshake                working -- verified G3 / OS 9.1
+  ECDHE-ECDSA + ChaCha20-Poly1305            working (suite 0xCCA9)
+  ECDHE-RSA + AES-GCM (alternate suites)     working
+  X.509 chain validation                     working -- 10 embedded root CAs
+  OS 9 system clock -> BearSSL date          working -- proleptic Gregorian
+  HTTPS GET via OSTLS_Fetch                  working -- returns decrypted body
+
+v0.2 -- non-blocking TLS stream API (shipped, hardware-verification pending)
+  OSTLS_New / Start / Pump / Read / Write    socket-like async surface
+  Bounded Pump (max_steps)                   never blocks; host UI stays responsive
+  Internal 4 KB read ring + 4 KB write queue back-pressure on caller-side stalls
+  Async OT via OTAsyncOpenEndpointInContext  notifier-driven event dispatch
+  OSTLS_Close / Dispose lifecycle            edge cases including Dispose-without-Close
+  Stage D1 async OT smoke probe              permanent regression for the OT plumbing
+  Stage D2 async TLS regression              full handshake + Write + chunked Read
 ```
 
 The verified Stage D run log against `google.com:443` is archived
@@ -61,29 +71,36 @@ useful as a regression reference.
 
 ## Roadmap
 
-A few things on the v1.x list, in rough priority order:
+In rough priority order:
 
-**Production entropy.** macSSL's current PRNG seed
-([`os9/ostls_entropy.c`](os9/ostls_entropy.c)) mixes a `TickCount`, a
-`Microseconds` reading, a stack address, and a fixed tag into a
-32-byte buffer. It satisfies BearSSL's seeded-check but it isn't the
-strong-randomness gathering a TLS implementation deserves. The plan
-for replacing it — mouse-delta gathering across an idle window, key
-latency jitter, OT notifier tick jitter, and a persisted seed file
-rolled at clean shutdown — is documented at
+**v0.2 hardware verification.** The async TLS stream API is
+implemented (see `os9/ostls_async.{h,c}` and Stage D1 + D2 in
+MacSSLTest) but hasn't been exercised on real hardware yet. Until
+both Stage D (blocking baseline) and Stage D2 (async via
+OSTLSConnection) come back green on a G3, v0.2 is "code complete,
+not validated."
+
+**v0.3 — HTTP convenience layer.** Redirect following, chunked
+transfer-encoding decoder, HTTP POST, session resumption. These
+are feature gaps; landing them gives MacSurf-side integration a
+much cleaner path to handle real sites.
+
+**v1.0 — production entropy.** macSSL's current PRNG seed
+([`os9/ostls_entropy.c`](os9/ostls_entropy.c)) mixes a `TickCount`,
+a `Microseconds` reading, a stack address, and a fixed tag into a
+32-byte buffer. It satisfies BearSSL's seeded-check but it isn't
+the strong-randomness gathering a TLS implementation deserves. The
+plan for replacing it — mouse-delta gathering across an idle
+window, key latency jitter, OT notifier tick jitter, and a
+persisted seed file rolled at clean shutdown — is documented at
 [`docs/macssl-integration-notes.md`](docs/macssl-integration-notes.md)
-section 3. This is the next real milestone.
+section 3. v1.0 unlocks the "security claim is real" story.
 
 **MacSurf integration.** Land a `macos9_https_fetcher.c` in the
-MacSurf frontend that calls `OSTLS_Fetch` when an `https:` URL is
-requested. Design at
+MacSurf frontend that calls into macSSL via the async API. Held
+until v0.2 is hardware-verified and v0.3 streaming makes the
+fetcher state machine cleaner. Design notes:
 [`docs/macssl-integration-notes.md`](docs/macssl-integration-notes.md).
-This is the first end-user-visible payoff of the library.
-
-**API extensions.** Redirect following, chunked transfer-encoding
-decoder, HTTP POST, and an async/callback variant that doesn't block
-the host's `WaitNextEvent` loop. These are feature gaps and can
-land independently as separate v1.x bumps.
 
 ## How it's wired
 
@@ -190,7 +207,11 @@ this niche is at the bottom of
 ## Tags
 
 - **v0.1.0** (2026-05-19) — first version with a working
-  `OSTLS_Fetch`. Verified on G3 / OS 9.1.
+  `OSTLS_Fetch`. Blocking API; verified on G3 / OS 9.1.
+- **v0.2.0** (in progress) — non-blocking async TLS stream API
+  (`OSTLS_New / Start / Pump / Write / Read / Close / Dispose`).
+  Code complete; tag bump waits on hardware verification of
+  Stage D2.
 
 ## License
 

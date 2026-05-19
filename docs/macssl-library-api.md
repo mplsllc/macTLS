@@ -1,13 +1,31 @@
-# macSSL library API (v1)
+# macSSL library API
 
-Stable public surface of macSSL after the Stage C pivot. Host apps
-(MacSurf, future tools) link macSSL's compiled object files and call
-`OSTLS_Fetch` directly. No proxy, no listener, no port choice.
+Two parallel public surfaces:
+
+- **v0.1 — blocking convenience.** `OSTLS_Fetch(...)`. Synchronous;
+  the call returns after the full handshake + GET + response capture
+  is done (or fails). Header: `os9/ostls_fetch.h`. Implementation:
+  `os9/ostls_fetch.c`. Verified end-to-end on G3 / OS 9.1.
+
+- **v0.2 — non-blocking TLS stream.** `OSTLS_New / Start / Pump /
+  Write / Read / Close / Dispose` plus introspection getters.
+  Socket-like; the caller drives a state machine via Pump and never
+  freezes their UI event loop. Header: `os9/ostls_async.h`.
+  Implementation: `os9/ostls_async.c`. Code complete; hardware
+  verification pending.
+
+The v0.2 API is the intended long-term surface for host-app
+integration (MacSurf and beyond). v0.1's `OSTLS_Fetch` is kept as
+the regression baseline and for callers who want a simple one-shot
+blocking call.
 
 ## Purpose
 
-Perform a single validated HTTPS GET on classic Mac OS 9 / PowerPC.
-Returns the decrypted response bytes to the caller.
+Perform validated HTTPS connections from a classic Mac OS 9 /
+PowerPC application without freezing the UI. v0.1 returns
+decrypted response bytes from a single GET; v0.2 exposes the
+underlying TLS stream so callers own the HTTP semantics (request
+shape, redirects, chunked decoding, POST).
 
 ## Supported TLS path
 
@@ -26,7 +44,7 @@ Returns the decrypted response bytes to the caller.
   G2. See `os9/ostls_b3_anchors.h` for the full list with expiry
   dates; rotation script at `tools/regenerate_anchors.sh`.
 
-## Function signature
+## v0.1 — `OSTLS_Fetch`
 
 ```c
 #include "ostls_fetch.h"
@@ -48,6 +66,62 @@ Returns `kOSTLSFetch_OK` (0) on success or a `kOSTLSFetch_*` code
 in the 1000..1019 range. `out_msg` always carries a short diagnostic
 string including the underlying BearSSL or OT error code where
 applicable.
+
+## v0.2 — async stream API
+
+```c
+#include "ostls_async.h"
+
+typedef struct OSTLSConnection OSTLSConnection;
+
+typedef enum {
+    kOSTLSStateIdle, kOSTLSStateConnecting, kOSTLSStateHandshaking,
+    kOSTLSStateOpen, kOSTLSStateClosing, kOSTLSStateClosed,
+    kOSTLSStateFailed
+} OSTLSState;
+
+typedef enum {
+    kOSTLSEventNone, kOSTLSEventConnected, kOSTLSEventHandshakeDone,
+    kOSTLSEventReadable, kOSTLSEventWritable,
+    kOSTLSEventClosed, kOSTLSEventFailed
+} OSTLSEvent;
+
+OSErr OSTLS_New(OSTLSConnection **out_conn, const OSTLSConfig *config);
+OSErr OSTLS_Start(OSTLSConnection *conn);
+OSErr OSTLS_Pump(OSTLSConnection *conn, UInt32 max_steps, OSTLSEvent *out_event);
+
+OSErr OSTLS_Write(OSTLSConnection *conn, const void *buf, UInt32 len, UInt32 *out_written);
+OSErr OSTLS_Read (OSTLSConnection *conn,       void *buf, UInt32 cap, UInt32 *out_read);
+
+void  OSTLS_Close  (OSTLSConnection *conn);
+void  OSTLS_Dispose(OSTLSConnection *conn);
+
+OSTLSState OSTLS_GetState(OSTLSConnection *conn);
+OSErr      OSTLS_GetLastError(OSTLSConnection *conn);
+UInt16     OSTLS_GetCipherSuite(OSTLSConnection *conn);
+void       OSTLS_GetDiagnostics(OSTLSConnection *conn, OSTLSDiagnostics *out_diag);
+void *     OSTLS_GetUserRefcon(OSTLSConnection *conn);
+```
+
+Result codes 2000..2017 in the `kOSTLSAsync_*` namespace, disjoint
+from `kOSTLSFetch_*` (1000..1014).
+
+Caller drives the connection via `OSTLS_Pump(conn, max_steps, &ev)`:
+each Pump call performs at most `max_steps` atomic actions (one
+OT operation, one BearSSL advance, or one buffer copy) and returns
+the most-interesting event observed. Recommended `max_steps` for a
+typical host with a `WaitNextEvent` loop is 4-8 per fetcher poll
+tick.
+
+Multiple `OSTLS_Read` calls per Pump are allowed; drain until
+`out_read == 0 && err == noErr`, then go back to Pump. `OSTLS_Write`
+buffers into an internal 4 KB queue; partial writes are normal when
+the buffer is full and the caller should retry the remainder after
+`kOSTLSEventWritable` fires.
+
+See [`docs/macssl-v0.2-async-design.md`](macssl-v0.2-async-design.md)
+for the full design rationale (state machine diagram, Pump step
+definition, lifecycle table, reentrancy contract).
 
 ## Caller responsibilities
 
@@ -190,15 +264,19 @@ int main(void)
 For the integration path into MacSurf specifically, see
 [macssl-integration-notes.md](macssl-integration-notes.md).
 
-## v2 roadmap (not yet shipped)
+## v0.3 roadmap (not yet shipped)
 
-- Async / callback variant: `OSTLS_FetchAsync(...)` that returns
-  immediately and invokes a caller callback at completion. Lets
-  the host app keep its event loop alive.
-- Socket-like API: `OSTLS_Open(host, port, sni)` →
-  `OSTLS_Write(conn, ...)` / `OSTLS_Read(conn, ...)` → `OSTLS_Close(conn)`.
-  Multiple in-flight connections; streaming.
-- Production entropy gathering (independent of API surface).
 - Redirect handling + chunked transfer-encoding decoder built into
-  the library.
+  the library (currently both belong to the caller's HTTP layer).
 - POST / PUT request body support.
+- TLS session resumption -- skip the full handshake on repeated
+  connections to the same host within the same session.
+- Connection pooling -- reuse the OT endpoint across fetches.
+
+## v1.0 (security-ready) roadmap
+
+- Production entropy gathering: mouse-delta across an idle window,
+  key-press latency jitter, OT notifier tick jitter, persisted
+  seed file rolled at clean shutdown. The Stage A insecure stub
+  in `os9/ostls_entropy.c` is what blocks the "production crypto"
+  claim more than any feature gap.
