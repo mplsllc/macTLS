@@ -52,8 +52,7 @@
 #include "ostls_b1_tcp.h"
 #include "ostls_b2_handshake.h"
 #include "ostls_b3_handshake.h"
-#include "ostls_b4_https_get.h"
-#include "ostls_c1_listener.h"
+#include "ostls_fetch.h"
 #include "ostls_log.h"
 
 
@@ -73,23 +72,16 @@
 #define OSTLS_B2_SERVERNAME "example.com"
 #define OSTLS_B3_TARGET     "google.com:443"
 #define OSTLS_B3_SERVERNAME "google.com"
-#define OSTLS_B4_TARGET     "google.com:443"
-#define OSTLS_B4_SERVERNAME "google.com"
-#define OSTLS_B4_REQPATH    "/"
 
 /*
- * Stage C1 listens on this port. Temporarily changed from 8765 to
- * 12345 to rule out the possibility that 8765 specifically is
- * already in use (or somehow reserved) on the test Mac. Twelve
- * rounds of -3150 from OTBind on 8765, all probes done, ALL fail
- * the same way. If 12345 also fails -3150 the port isn't the issue;
- * if 12345 succeeds, 8765 was occupied by some other classic OS 9
- * service and the original code was always going to fail until that
- * port was reclaimed.
- *
- * Will revert to 8765 once we know which case applies.
+ * Stage D library-call target. Same host MacSSLTest has been
+ * exercising end-to-end since Stage B4 -- google.com:443 over the
+ * embedded GTS Root R4 trust anchor.
  */
-#define OSTLS_C1_PORT       12345
+#define OSTLS_D_HOST        "google.com"
+#define OSTLS_D_PORT        443
+#define OSTLS_D_SERVERNAME  "google.com"
+#define OSTLS_D_PATH        "/"
 
 
 /*
@@ -195,31 +187,21 @@ smoke_label(OSErr code)
     case kOSTLSB3_X509TimeUnknown:         return "B3 X509 time unknown (clock?)";
     case kOSTLSB3_X509Other:               return "B3 X509 other validation error";
     case kOSTLSB3_BearSSLError:            return "B3 BearSSL engine error";
-    case kOSTLSB4_BadArgs:                 return "B4 bad args";
-    case kOSTLSB4_ClockBefore2000:         return "B4 system clock before 2000";
-    case kOSTLSB4_OTConfigFail:            return "B4 OTCreateConfiguration failed";
-    case kOSTLSB4_OTOpenEndptFail:         return "B4 OTOpenEndpoint failed";
-    case kOSTLSB4_OTBindFail:              return "B4 OTBind failed";
-    case kOSTLSB4_OTDnsAddrFail:           return "B4 OTInitDNSAddress failed";
-    case kOSTLSB4_OTConnectFail:           return "B4 OTConnect failed";
-    case kOSTLSB4_EntropyFail:             return "B4 entropy inject failed";
-    case kOSTLSB4_ClientResetFail:         return "B4 br_ssl_client_reset failed";
-    case kOSTLSB4_OTSndFail:               return "B4 OTSnd failed";
-    case kOSTLSB4_OTRcvFail:               return "B4 OTRcv failed";
-    case kOSTLSB4_HandshakeTimeout:        return "B4 handshake/IO timed out";
-    case kOSTLSB4_BearSSLError:            return "B4 BearSSL engine error";
-    case kOSTLSB4_RequestTooBig:           return "B4 request too big for sendapp buf";
-    case kOSTLSB4_NoBytesReceived:         return "B4 peer closed before any plaintext";
-    case kOSTLSC1_BadArgs:                 return "C1 bad args";
-    case kOSTLSC1_OTConfigFail:            return "C1 OTCreateConfiguration failed";
-    case kOSTLSC1_OTOpenEndptFail:         return "C1 OTOpenEndpoint failed (listener)";
-    case kOSTLSC1_OTBindFail:              return "C1 OTBind failed (port in use?)";
-    case kOSTLSC1_OTListenFail:            return "C1 OTListen failed";
-    case kOSTLSC1_OTAcceptOpenFail:        return "C1 OTOpenEndpoint failed (child)";
-    case kOSTLSC1_OTAcceptBindFail:        return "C1 OTBind failed (child)";
-    case kOSTLSC1_OTAcceptFail:            return "C1 OTAccept failed";
-    case kOSTLSC1_OTRcvFail:               return "C1 OTRcv failed";
-    case kOSTLSC1_PeerClosedEmpty:         return "C1 peer connected but sent nothing";
+    case kOSTLSFetch_BadArgs:              return "Fetch bad args";
+    case kOSTLSFetch_ClockBefore2000:      return "Fetch system clock before 2000";
+    case kOSTLSFetch_OTConfigFail:         return "Fetch OTCreateConfiguration failed";
+    case kOSTLSFetch_OTOpenEndptFail:      return "Fetch OTOpenEndpoint failed";
+    case kOSTLSFetch_OTBindFail:           return "Fetch OTBind failed";
+    case kOSTLSFetch_OTDnsAddrFail:        return "Fetch OTInitDNSAddress failed";
+    case kOSTLSFetch_OTConnectFail:        return "Fetch OTConnect failed";
+    case kOSTLSFetch_EntropyFail:          return "Fetch entropy inject failed";
+    case kOSTLSFetch_ClientResetFail:      return "Fetch br_ssl_client_reset failed";
+    case kOSTLSFetch_OTSndFail:            return "Fetch OTSnd failed";
+    case kOSTLSFetch_OTRcvFail:            return "Fetch OTRcv failed";
+    case kOSTLSFetch_HandshakeTimeout:     return "Fetch handshake/IO timed out";
+    case kOSTLSFetch_BearSSLError:         return "Fetch BearSSL engine error";
+    case kOSTLSFetch_RequestTooBig:        return "Fetch request too big";
+    case kOSTLSFetch_NoBytesReceived:      return "Fetch peer closed before any plaintext";
     }
     return "unknown failure";
 }
@@ -546,104 +528,54 @@ main(void)
     }
 
     /*
-     * Stage B4: tiny HTTPS GET. Opens a fresh validated session
-     * against google.com:443, sends "GET / HTTP/1.0" with
-     * Connection: close, captures the first 96 bytes of the
-     * decrypted response. The captured prefix is logged with
-     * escaping for control chars so it survives unbroken to the log
-     * file even when the response contains CR/LF.
+     * Stage D: exercise the macSSL PUBLIC LIBRARY API end-to-end.
+     *
+     * OSTLS_Fetch(host, port, server_name, path, out_buf, out_cap,
+     *             out_len, out_msg, out_msg_len)
+     *
+     * is the only public entry point macSSL now exposes. This stage
+     * replaces the former Stage B4 + Stage C1 path -- C1 (passive
+     * listener) was abandoned after fixes16-fixes34 established that
+     * Carbon CFM OT cannot bind to caller-chosen addresses (see
+     * docs/carbon-ot-passive-bind-finding.md). The B4 path was the
+     * de-facto library API in disguise; OSTLS_Fetch is the same
+     * logic with a stable public signature.
      */
     {
-        OSErr b4_result;
-        char  b4_msg[180];
-        char  b4_prefix[96];
+        OSErr  d_result;
+        char   d_msg[180];
+        unsigned char d_response[96];
+        UInt32 d_len = 0;
 
-        OSTLS_LogLinef("Stage B4   HTTPS GET %s%s ...",
-                       OSTLS_B4_TARGET, OSTLS_B4_REQPATH);
-        b4_result = OSTLS_B4_HTTPS_Get_Probe(
-            OSTLS_B4_TARGET, OSTLS_B4_SERVERNAME, OSTLS_B4_REQPATH,
-            b4_prefix, sizeof b4_prefix,
-            b4_msg, sizeof b4_msg);
-        OSTLS_LogLinef("Stage B4   HTTPS GET                -> code=%d %s",
-                       (int)b4_result, b4_msg);
+        OSTLS_LogLinef("Stage D    OSTLS_Fetch %s:%u%s ...",
+                       OSTLS_D_HOST, (unsigned)OSTLS_D_PORT, OSTLS_D_PATH);
+        d_result = OSTLS_Fetch(
+            OSTLS_D_HOST,
+            (UInt16)OSTLS_D_PORT,
+            OSTLS_D_SERVERNAME,
+            OSTLS_D_PATH,
+            d_response, (UInt32)sizeof d_response,
+            &d_len,
+            d_msg, (UInt32)sizeof d_msg);
+        OSTLS_LogLinef("Stage D    OSTLS_Fetch                -> code=%d %s",
+                       (int)d_result, d_msg);
 
-        if (b4_result != kOSTLSB4_OK) {
-            sprintf(title_buf, "MacSSLTest -- Stage B4 FAILED");
-            sprintf(line1_buf, "Stage B4 FAILED (code %d): %.140s",
-                (int)b4_result, b4_msg);
-            sprintf(line2_buf,
-                "Gate: %s (target=%s)",
-                smoke_label(b4_result), OSTLS_B4_TARGET);
-            OSTLS_LogBlank();
-            OSTLS_LogLinef("==== Stage B4 FAILED (code=%d) ====",
-                           (int)b4_result);
-            show_result_and_wait(title_buf, line1_buf, line2_buf);
-            ostls_ot_close();
-            OSTLS_LogClose();
-            return 0;
-        }
-    }
+        if (d_result == kOSTLSFetch_OK) {
+            char short_resp[60];
+            UInt32 n_short;
+            UInt32 i;
 
-    /*
-     * Stage C1: open a TCP listener on OSTLS_C1_PORT and accept a
-     * single inbound connection. The UI freezes during OTListen
-     * because we're in synchronous + blocking mode -- this is
-     * acceptable for the gate. The log line below is written + flushed
-     * BEFORE the freeze, so an operator pulling MacSSLTest.log can
-     * confirm the listener is up and waiting.
-     *
-     * To trigger the accept on the same Mac:
-     *   telnet localhost 8765
-     *   <type "GET /test HTTP/1.0" + RETURN twice + ctrl-]> quit
-     *
-     * From another machine on the LAN:
-     *   nc <mac-ip> 8765
-     *   <type anything> ctrl-D
-     */
-    {
-        OSErr c1_result;
-        char  c1_msg[180];
-        char  c1_request[256];
-
-        OSTLS_LogLinef("Stage C1   listening on port %u ...",
-                       (unsigned)OSTLS_C1_PORT);
-        OSTLS_LogLine("           (UI is frozen until a client connects)");
-
-        c1_result = OSTLS_C1_Listener_Probe(
-            (unsigned short)OSTLS_C1_PORT,
-            c1_request, sizeof c1_request,
-            c1_msg, sizeof c1_msg);
-
-        OSTLS_LogLinef("Stage C1   listener result          -> code=%d %s",
-                       (int)c1_result, c1_msg);
-
-        if (c1_result == kOSTLSC1_OK) {
-            char short_req[80];
-            size_t i;
-            size_t n = strlen(c1_request);
-            if (n > sizeof short_req - 4) {
-                n = sizeof short_req - 4;
-            }
-            for (i = 0; i < n; i++) {
-                unsigned char c = (unsigned char)c1_request[i];
-                if (c == '\r' || c == '\n' || c < 0x20 || c >= 0x7F) {
-                    short_req[i] = ' ';
-                } else {
-                    short_req[i] = (char)c;
-                }
-            }
-            short_req[n] = '\0';
-
-            /* Log the full request body with escape-rendered control
-             * chars so it survives unbroken to the file log. */
+            /* Log the captured response bytes with escapes so the log
+             * file shows the HTTP response intact. */
             {
                 char dbg[320];
                 size_t pos;
-                size_t j;
-                pos = (size_t)sprintf(dbg, "Stage C1   request bytes [%lu]: ",
-                                      (unsigned long)n);
-                for (j = 0; j < n && pos < sizeof dbg - 4; j++) {
-                    unsigned char c = (unsigned char)c1_request[j];
+                UInt32 j;
+                pos = (size_t)sprintf(dbg,
+                    "Stage D    response prefix [%lu]   : ",
+                    (unsigned long)d_len);
+                for (j = 0; j < d_len && pos < sizeof dbg - 4; j++) {
+                    unsigned char c = d_response[j];
                     if (c == 0x0D) {
                         dbg[pos++] = '\\';
                         dbg[pos++] = 'r';
@@ -653,27 +585,50 @@ main(void)
                     } else if (c >= 0x20 && c < 0x7F) {
                         dbg[pos++] = (char)c;
                     } else {
-                        dbg[pos++] = '?';
+                        static const char hex[] = "0123456789ABCDEF";
+                        if (pos + 4 < sizeof dbg) {
+                            dbg[pos++] = '\\';
+                            dbg[pos++] = 'x';
+                            dbg[pos++] = hex[(c >> 4) & 0xF];
+                            dbg[pos++] = hex[c & 0xF];
+                        }
                     }
                 }
                 dbg[pos] = '\0';
                 OSTLS_LogLine(dbg);
             }
 
-            sprintf(title_buf, "MacSSLTest -- A..C1 OK");
-            sprintf(line1_buf, "%.140s", c1_msg);
-            sprintf(line2_buf, "Req: %.140s", short_req);
+            /* Short ASCII version for the result-window line 2. */
+            n_short = d_len;
+            if (n_short > (UInt32)(sizeof short_resp - 4)) {
+                n_short = (UInt32)(sizeof short_resp - 4);
+            }
+            for (i = 0; i < n_short; i++) {
+                unsigned char c = d_response[i];
+                if (c == '\r' || c == '\n' || c < 0x20 || c >= 0x7F) {
+                    short_resp[i] = ' ';
+                } else {
+                    short_resp[i] = (char)c;
+                }
+            }
+            short_resp[n_short] = '\0';
+
+            sprintf(title_buf, "MacSSLTest -- A..D OK (library)");
+            sprintf(line1_buf, "OSTLS_Fetch %s", d_msg);
+            sprintf(line2_buf, "Resp: %.140s", short_resp);
             OSTLS_LogBlank();
             OSTLS_LogLine("==== ALL STAGES OK ====");
         } else {
-            sprintf(title_buf, "MacSSLTest -- Stage C1 FAILED");
-            sprintf(line1_buf, "Stage C1 FAILED (code %d): %.140s",
-                (int)c1_result, c1_msg);
-            sprintf(line2_buf, "Gate: %s (port=%u)",
-                smoke_label(c1_result), (unsigned)OSTLS_C1_PORT);
+            sprintf(title_buf, "MacSSLTest -- Stage D FAILED");
+            sprintf(line1_buf, "OSTLS_Fetch FAILED (code %d): %.140s",
+                (int)d_result, d_msg);
+            sprintf(line2_buf,
+                "Gate: %s (target=%s:%u)",
+                smoke_label(d_result),
+                OSTLS_D_HOST, (unsigned)OSTLS_D_PORT);
             OSTLS_LogBlank();
-            OSTLS_LogLinef("==== Stage C1 FAILED (code=%d) ====",
-                           (int)c1_result);
+            OSTLS_LogLinef("==== Stage D FAILED (code=%d) ====",
+                           (int)d_result);
         }
     }
 

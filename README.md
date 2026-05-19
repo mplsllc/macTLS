@@ -178,8 +178,23 @@ Stage B3  validated TLS via embedded roots  COMPLETE  G3 OS 9.1  (google.com)
 Stage B4  HTTPS GET decrypted end-to-end    COMPLETE  G3 OS 9.1  (95B body)
 Stage B5  MacSurf integration notes (doc)   COMPLETE
 Stage C   local HTTP proxy app              ABANDONED — see below
-Stage D   library mode (link into MacSurf)  NEXT
+Stage D   library mode (OSTLS_Fetch API)    COMPLETE  (regression harness wires through OSTLS_Fetch)
 ```
+
+Public library surface: [`os9/ostls_fetch.h`](os9/ostls_fetch.h).
+Full API doc: [`docs/macssl-library-api.md`](docs/macssl-library-api.md).
+v1 limitations called out there explicitly (synchronous, HTTP/1.0
+only, no streaming callback yet, Stage A insecure entropy stub).
+
+> **DO NOT re-enable the Stage C listener code unless targeting a
+> non-Carbon (MPW / pre-Carbon OT / Retro68 classic) build or a
+> different process model.** The 14-round investigation report at
+> [`docs/carbon-ot-passive-bind-finding.md`](docs/carbon-ot-passive-bind-finding.md)
+> documents why. The C1 source is archived at
+> `os9/archive/ostls_c1_listener_carbon_cfm_abandoned.{h,c}` for git
+> history; the Stage B4 source is similarly at
+> `os9/archive/ostls_b4_https_get_superseded.{h,c}` since the library
+> entry point `OSTLS_Fetch` supersedes it.
 
 ### Stage C abandoned — Carbon CFM cannot do passive OTBind
 
