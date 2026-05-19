@@ -72,8 +72,61 @@ static OSStatus OTSndOrderlyDisconnect(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTCloseProvider(EndpointRef e){(void)e;return noErr;}
 static void OTInitInetAddress(InetAddress *a, InetPort p, InetHost h){(void)a;(void)p;(void)h;}
 static void OTMemzero(void *p,unsigned long n){memset(p,0,n);}
+/* pascal is already a Retro68 built-in keyword; no #define needed */
+typedef long OTEventCode;
+typedef void (*OTNotifyProcPtr)(void *, OTEventCode, OTResult, void *);
+#define T_BINDCOMPLETE 4
+#define kOTNoError 0
+static OSStatus OTInstallNotifier(EndpointRef e, OTNotifyProcPtr p, void *c){(void)e;(void)p;(void)c;return noErr;}
+static OSStatus OTSetAsynchronous(EndpointRef e){(void)e;return noErr;}
+static unsigned long TickCount(void){return 0;}
 extern void *g_ostls_ot_context;
 #endif
+
+
+/*
+ * Notifier-driven async bind state.
+ *
+ * Apple's HTTP Server sample uses pure-async OT throughout: every
+ * call returns immediately, completion arrives via a notifier
+ * callback that runs at interrupt time. The notifier can only
+ * touch globals -- no Toolbox calls, no memory allocation.
+ *
+ * For Stage C1's single-shot probe we use a hybrid: open and most
+ * calls remain synchronous, but the bind specifically is performed
+ * in async mode (OTSetAsynchronous before OTBind, then poll a
+ * flag the notifier sets at T_BINDCOMPLETE). Five rounds of sync
+ * OTBind returning -3150 against a textbook-correct address point
+ * to CarbonLib's OT sync wrapper rejecting passive binds; async
+ * bind goes through a different code path internally.
+ */
+static volatile int g_c1_bind_complete = 0;
+static volatile long g_c1_bind_result  = 0;
+static volatile long g_c1_last_event   = 0;
+
+
+/*
+ * OT notifier callback. Runs at INTERRUPT TIME.
+ *
+ *   - MUST NOT call Toolbox (no OSTLS_LogLinef, no memory ops).
+ *   - MAY set volatile globals.
+ *   - MAY copy small amounts of data.
+ *
+ * We only care about T_BINDCOMPLETE in this probe -- it signals
+ * the result of the async OTBind we kicked off.
+ */
+static pascal void
+c1_bind_notifier(void *context, OTEventCode event,
+                 OTResult result, void *cookie)
+{
+    (void)context;
+    (void)cookie;
+    g_c1_last_event = (long)event;
+    if (event == T_BINDCOMPLETE) {
+        g_c1_bind_result   = (long)result;
+        g_c1_bind_complete = 1;
+    }
+}
 
 
 /* ----------------------------------------------------------------- */
@@ -181,15 +234,41 @@ OSTLS_C1_Listener_Probe(unsigned short port,
                        (long)ep_info.flags);
     }
     /*
-     * Sync mode only -- DO NOT call OTSetBlocking. Apple's HTTP Server
-     * sample uses pure async + notifier and never sets "blocking" at
-     * all; the sync+blocking combo is something we only use for
-     * outbound clients (B1-B4). Hypothesis: OTSetBlocking + passive
-     * bind interact badly in CarbonLib's OT wrapper. OTSetSynchronous
-     * alone gives us a sync endpoint without the "block waiting for
-     * data" semantic that blocking adds.
+     * Install the bind-completion notifier first. We then switch
+     * to async mode so OTBind goes through OT's async dispatch
+     * path -- five rounds of sync OTBind returned -3150 against
+     * textbook-correct addresses; the only major behavioural
+     * difference vs. Apple's working sample is the sync wrapper.
+     * The hypothesis is that CarbonLib's sync OT bind rejects
+     * passive endpoints (qlen >= 1) outright, while async bind
+     * dispatches through a different code path that accepts them.
+     *
+     * After bind completes via the notifier, we'll switch back to
+     * sync mode for OTListen / OTAccept / OTRcv -- those have
+     * always worked sync in the outbound code paths.
      */
-    OTSetSynchronous(listener_ep);
+    g_c1_bind_complete = 0;
+    g_c1_bind_result   = 0;
+    g_c1_last_event    = 0;
+
+    oterr = OTInstallNotifier(listener_ep,
+                              (OTNotifyProcPtr)c1_bind_notifier, NULL);
+    if (oterr != noErr) {
+        OSTLS_LogLinef("C1 diag    OTInstallNotifier err=%ld", (long)oterr);
+        c1_status(out_msg, out_msg_len, "C1: OTInstallNotifier FAIL",
+                  (long)oterr);
+        OTCloseProvider(listener_ep);
+        return (OSErr)kOSTLSC1_OTBindFail;
+    }
+
+    oterr = OTSetAsynchronous(listener_ep);
+    if (oterr != noErr) {
+        OSTLS_LogLinef("C1 diag    OTSetAsynchronous err=%ld", (long)oterr);
+        c1_status(out_msg, out_msg_len, "C1: OTSetAsynchronous FAIL",
+                  (long)oterr);
+        OTCloseProvider(listener_ep);
+        return (OSErr)kOSTLSC1_OTBindFail;
+    }
 
     /* ----- 2. Bind on 0.0.0.0:port with backlog 1 ----- */
 
@@ -268,18 +347,61 @@ OSTLS_C1_Listener_Probe(unsigned short port,
         bind_ret.addr.maxlen = (OTByteCount)sizeof bound_addr;
         bind_ret.addr.len    = 0;
 
+        /*
+         * Async OTBind: returns immediately with kOTNoError (or an
+         * immediate validation failure). The actual bind result
+         * arrives via the notifier at T_BINDCOMPLETE.
+         */
         oterr = OTBind(listener_ep, &bind_req, &bind_ret);
-        if (oterr != noErr) {
-            OSTLS_LogLinef("C1 diag    OTBind returned err=%ld", (long)oterr);
-            c1_status(out_msg, out_msg_len, "C1: OTBind FAIL", (long)oterr);
+        OSTLS_LogLinef("C1 diag    OTBind submit err=%ld (async dispatch)",
+                       (long)oterr);
+        if (oterr != noErr && oterr != kOTNoError) {
+            c1_status(out_msg, out_msg_len, "C1: OTBind submit FAIL",
+                      (long)oterr);
             OTCloseProvider(listener_ep);
             return (OSErr)kOSTLSC1_OTBindFail;
         }
-        /* Log what we actually got bound to so we can see whether OT
-         * picked the port we requested or assigned a different one. */
+
+        /*
+         * Spin waiting for the notifier to set g_c1_bind_complete.
+         * Bound by 30 seconds at 60Hz = 1800 ticks. On a healthy
+         * stack T_BINDCOMPLETE fires within milliseconds.
+         */
+        {
+            unsigned long deadline = TickCount() + 30UL * 60UL;
+            while (!g_c1_bind_complete) {
+                if (TickCount() > deadline) {
+                    OSTLS_LogLinef("C1 diag    bind notifier timeout 30s last_event=%ld",
+                                   (long)g_c1_last_event);
+                    c1_status(out_msg, out_msg_len,
+                              "C1: bind notifier timeout (30s)", 0);
+                    OTCloseProvider(listener_ep);
+                    return (OSErr)kOSTLSC1_OTBindFail;
+                }
+                /* yield to the OS so the notifier can fire */
+            }
+        }
+
+        OSTLS_LogLinef("C1 diag    bind notifier fired event=%ld result=%ld",
+                       (long)g_c1_last_event, (long)g_c1_bind_result);
+
+        if (g_c1_bind_result != noErr) {
+            c1_status(out_msg, out_msg_len,
+                      "C1: OTBind async FAIL",
+                      (long)g_c1_bind_result);
+            OTCloseProvider(listener_ep);
+            return (OSErr)kOSTLSC1_OTBindFail;
+        }
+
         OSTLS_LogLinef("C1 diag    OTBind OK actual port=%u host=0x%08lX",
                        (unsigned)bound_addr.fPort,
                        (unsigned long)bound_addr.fHost);
+
+        /* Switch back to sync mode for the remaining OTListen /
+         * OTAccept / OTRcv calls -- those work fine sync in
+         * outbound code (we just don't normally use them inbound). */
+        OTSetSynchronous(listener_ep);
+        OTSetBlocking(listener_ep);
     }
 
     /* ----- 3. OTListen -- blocks until a peer arrives ----- */
