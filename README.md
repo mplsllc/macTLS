@@ -63,6 +63,53 @@ same set Certainly uses) and the async-OT integration pattern that
 macSSL's MacSurf-side wiring will adopt at Stage C. Credit to
 minorbug for publishing the work openly.
 
+[**MacSSL (bbenchoff)**](https://github.com/bbenchoff/MacSSL) by Brian
+Benchoff is a separate, earlier proof-of-concept that ports
+**mbedtls/PolarSSL 2.x** to classic Mac OS 7/8/9 under **CodeWarrior
+Pro 4**, producing a FAT (68K + PPC) Toolbox app that fetches one
+HTTPS endpoint (`640by480.com`) using TLS 1.1, RSA-AES-CBC, SHA-1
+signatures, and a single hardcoded chain (ISRG Root X1 + Let's
+Encrypt R11). The README explicitly marks the repo as a frozen
+proof-of-concept / template — no further development.
+
+Naming collision is a coincidence: bbenchoff's "MacSSL" (capital M, on
+GitHub since 2024) and this "macSSL" (lowercase m) were named
+independently. They are separate projects with different goals.
+
+What's useful from bbenchoff's work, even as cold reference material:
+
+- Validates that **native TLS on OS 9 via CW8 is possible** — first
+  public demonstration as far as we know. macSSL benefits from the
+  trail being already cut.
+- Documents in detail the **C89 porting tax** for a non-C89-clean
+  crypto library (mbedtls): variadic macros, 64-bit integer
+  emulation via `struct { uint32_t high, low; }`, every operation
+  hand-rewritten. macSSL avoided this entirely by choosing BearSSL,
+  which was C89-clean from the start.
+- The `mac_stdint.h` emulation pattern is an academic reference if
+  anyone ever needs to port a C99 codebase to CW8 again.
+
+What bbenchoff's MacSSL is **not** useful for in our context:
+
+- **Different crypto library** (mbedtls vs BearSSL). No code reuse
+  between them.
+- **TLS 1.1 only** with RSA-AES-CBC and SHA-1 signatures. Modern
+  HTTPS endpoints frequently reject these handshakes; Google,
+  Cloudflare, and major CDNs require TLS 1.2 with AEAD ciphers.
+- **One hardcoded site** (`640by480.com`); not a general-purpose
+  client.
+- **Frozen repository** — no fixes, no anchor rotation.
+- **The actual app/OT/entropy code is in the StuffIt archive**
+  (`Archive.sit`), not in the published source tree. Only the
+  ported mbedtls library compiles unit appears in the GitHub repo;
+  the wrapper and Open Transport glue (`SSLWrapper.c`, the API
+  call, the "mouse jitter + tick + OT timestamp" entropy mix the
+  README describes in prose) are unavailable as source under
+  version control.
+
+Treat it as a historical reference point and proof that the path is
+walkable, not a source of code to lift.
+
 ```
 Classic browser / OS 9 app
         |  plain HTTP proxy request
