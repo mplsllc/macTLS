@@ -78,12 +78,18 @@
 #define OSTLS_B4_REQPATH    "/"
 
 /*
- * Stage C1 listens on this port for one incoming TCP connection.
- * 8765 matches the convention MacSurf already uses for its HTTP proxy
- * so once Stage C ships the operator can point any classic browser
- * at the same port without retraining.
+ * Stage C1 listens on this port. Temporarily changed from 8765 to
+ * 12345 to rule out the possibility that 8765 specifically is
+ * already in use (or somehow reserved) on the test Mac. Twelve
+ * rounds of -3150 from OTBind on 8765, all probes done, ALL fail
+ * the same way. If 12345 also fails -3150 the port isn't the issue;
+ * if 12345 succeeds, 8765 was occupied by some other classic OS 9
+ * service and the original code was always going to fail until that
+ * port was reclaimed.
+ *
+ * Will revert to 8765 once we know which case applies.
  */
-#define OSTLS_C1_PORT       8765
+#define OSTLS_C1_PORT       12345
 
 
 /*
