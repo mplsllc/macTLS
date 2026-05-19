@@ -26,22 +26,32 @@ Classic browser / OS 9 app
    remote HTTPS server
 ```
 
-## Current status (2026-05-18)
+## Current status (2026-05-19)
 
 ```
-Stage 0:                     COMPLETE  (audit + vendor)
-Stage A (source-side):       COMPLETE  (CW8 prefix, file list, entropy, smoke)
-Stage A test app:            COMPLETE  (MacSSLTest/ — bare Carbon harness)
-Stage A Mac validation:      PENDING   (build MacSSLTest.mcp, smoke OK on G3 + G4)
-Stage A.5 mul64 validation:  PENDING   (probe G3 + G4 across 3 optimisations)
-Stage B (OSTLSSocket):       BLOCKED   until both Mac validations land
-Stage C (HTTP listener):     BLOCKED
-Stage D (HTTPS fetch):       BLOCKED
-Stage E+ (compat, packaging):BLOCKED
+Stage 0   audit + vendor                    COMPLETE
+Stage A   BearSSL static init / smoke       COMPLETE  G3 OS 9.1
+Stage A.5 CW8 PPC mul64 codegen probe       COMPLETE  G3 OS 9.1
+Stage B1  OT TCP connect (example.com:443)  COMPLETE  G3 OS 9.1
+Stage B2  BearSSL insecure handshake        COMPLETE  G3 OS 9.1  (0xCCA9)
+Stage B3  validated TLS via embedded roots  COMPLETE  G3 OS 9.1  (google.com)
+Stage B4  HTTPS GET decrypted end-to-end    COMPLETE  G3 OS 9.1  (95B body)
+Stage B5  MacSurf integration notes (doc)   COMPLETE
+Stage C   local HTTP proxy app              NEXT      (C1 listener -> route -> stream)
 ```
 
-Source-side work is **frozen** until the Mac validation lands. Each
-stage gate is verified independently before the next begins.
+**Baseline frozen at Stage B4 — native validated HTTPS GET works on
+real Mac OS 9 PowerPC hardware.** Cipher suite negotiated and accepted
+by the engine: `TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 (0xCCA9)`,
+TLS 1.2, validated against five embedded trust anchors (Amazon Root
+CA 1, DigiCert Global Root G2, GTS Root R1, GTS Root R4 EC P-384, ISRG
+Root X1). The full run log lives at
+[docs/runs/2026-05-19-b4-google-ok.txt](docs/runs/2026-05-19-b4-google-ok.txt).
+
+The project is past the crypto-risk phase. Remaining work is product /
+proxy engineering. See
+[docs/macssl-integration-notes.md](docs/macssl-integration-notes.md)
+for the MacSurf-side integration design and Stage C plan.
 
 ## Layout
 
