@@ -65,6 +65,7 @@ static EndpointRef OTOpenEndpoint(OTConfigurationRef c,unsigned long f,void *p,O
 static OSStatus OTSetSynchronous(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTSetBlocking(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTBind(EndpointRef e,TBind *r,TBind *o){(void)e;(void)r;(void)o;return noErr;}
+static OSStatus OTUnbind(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTListen(EndpointRef e,TCall *c){(void)e;(void)c;return noErr;}
 static OSStatus OTAccept(EndpointRef l,EndpointRef c,TCall *call){(void)l;(void)c;(void)call;return noErr;}
 static OTResult OTRcv(EndpointRef e,void *b,long n,long *f){(void)e;(void)b;(void)n;(void)f;return 0;}
@@ -435,11 +436,59 @@ OSTLS_C1_Listener_Probe(unsigned short port,
              */
             OSStatus probe_err;
             OTSetSynchronous(listener_ep);
+
+            /* Probe A: qlen=0 + NULL addr (client mode, OT picks port). */
             probe_err = OTBind(listener_ep, NULL, NULL);
-            OSTLS_LogLinef("C1 diag    fallback OTBind(NULL,NULL) err=%ld %s",
+            OSTLS_LogLinef("C1 diag    probeA OTBind(NULL,NULL) qlen=0 err=%ld %s",
                            (long)probe_err,
-                           probe_err == noErr ? "(endpoint bindable in client mode)" :
-                                                "(endpoint refuses any bind)");
+                           probe_err == noErr ? "OK" : "FAIL");
+            if (probe_err == noErr) {
+                /* Need to unbind before next probe. */
+                OTUnbind(listener_ep);
+            }
+
+            /* Probe B: qlen=0 + EXPLICIT addr (specific port + client mode). */
+            {
+                TBind probeB_req;
+                TBind probeB_ret;
+                InetAddress probeB_bound;
+                OTMemzero(&probeB_req, sizeof probeB_req);
+                probeB_req.addr.buf    = (UInt8 *)&local_addr;
+                probeB_req.addr.len    = (OTByteCount)sizeof local_addr;
+                probeB_req.addr.maxlen = (OTByteCount)sizeof local_addr;
+                probeB_req.qlen        = 0L;
+                OTMemzero(&probeB_ret, sizeof probeB_ret);
+                OTMemzero(&probeB_bound, sizeof probeB_bound);
+                probeB_ret.addr.buf    = (UInt8 *)&probeB_bound;
+                probeB_ret.addr.maxlen = (OTByteCount)sizeof probeB_bound;
+                probe_err = OTBind(listener_ep, &probeB_req, &probeB_ret);
+                OSTLS_LogLinef("C1 diag    probeB OTBind(explicit,qlen=0) err=%ld port=%u",
+                               (long)probe_err,
+                               (unsigned)probeB_bound.fPort);
+                if (probe_err == noErr) {
+                    OTUnbind(listener_ep);
+                }
+            }
+
+            /* Probe C: qlen=1 + NULL addr (server mode, OT-assigned port). */
+            {
+                TBind probeC_req;
+                TBind probeC_ret;
+                InetAddress probeC_bound;
+                OTMemzero(&probeC_req, sizeof probeC_req);
+                probeC_req.addr.buf    = NULL;
+                probeC_req.addr.len    = 0;
+                probeC_req.addr.maxlen = 0;
+                probeC_req.qlen        = 1L;
+                OTMemzero(&probeC_ret, sizeof probeC_ret);
+                OTMemzero(&probeC_bound, sizeof probeC_bound);
+                probeC_ret.addr.buf    = (UInt8 *)&probeC_bound;
+                probeC_ret.addr.maxlen = (OTByteCount)sizeof probeC_bound;
+                probe_err = OTBind(listener_ep, &probeC_req, &probeC_ret);
+                OSTLS_LogLinef("C1 diag    probeC OTBind(NULL,qlen=1) err=%ld port=%u",
+                               (long)probe_err,
+                               (unsigned)probeC_bound.fPort);
+            }
 
             c1_status(out_msg, out_msg_len,
                       "C1: OTBind async FAIL",
