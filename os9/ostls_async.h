@@ -1,5 +1,5 @@
 /*
- * ostls_async.h -- macSSL v0.2 non-blocking TLS stream API
+ * ostls_async.h -- macTLS v0.2 non-blocking TLS stream API
  *
  * Socket-like async TLS transport for classic Mac OS 9. Designed so a
  * host app with its own event loop / fetcher state machine can drive
@@ -25,11 +25,11 @@
  *   OSTLS_Dispose(conn);
  *
  * HTTP semantics (request formatting, redirect handling, chunked
- * decoding) stay above macSSL. macSSL only owns the TLS bytes
+ * decoding) stay above macTLS. macTLS only owns the TLS bytes
  * between OT and the caller.
  *
- * Design doc: docs/macssl-v0.2-async-design.md
- * Library API doc: docs/macssl-library-api.md
+ * Design doc: docs/mactls-v0.2-async-design.md
+ * Library API doc: docs/mactls-library-api.md
  */
 
 #ifndef OSTLS_ASYNC_H
@@ -101,7 +101,7 @@ typedef struct OSTLSConfig {
     UInt32 connect_timeout_ticks;
     UInt32 handshake_timeout_ticks;
 
-    /* Opaque to macSSL; retrieved via OSTLS_GetUserRefcon. */
+    /* Opaque to macTLS; retrieved via OSTLS_GetUserRefcon. */
     void *user_refcon;
 } OSTLSConfig;
 

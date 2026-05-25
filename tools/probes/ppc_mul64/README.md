@@ -19,7 +19,7 @@ correct), once on real OS 9 hardware in CW8 (the actual test).
 ### Linux baseline
 
 ```sh
-cd /home/patrick/Webs/macsurf/macSSL
+cd /home/patrick/Webs/macsurf/macTLS
 gcc -std=c89 -pedantic-errors -Wall -Wextra -Wno-long-long \
     -o /tmp/probe_host tools/probes/ppc_mul64/ppc_mul64_probe.c
 /tmp/probe_host
@@ -43,7 +43,7 @@ The probe has been verified to pass on x86-64 Linux at write time.
 This is the actual test. There is no Linux substitute.
 
 1. Copy `tools/probes/ppc_mul64/ppc_mul64_probe.c` and
-   `ppc_mul64_probe.h` to the Mac alongside the rest of the macSSL tree.
+   `ppc_mul64_probe.h` to the Mac alongside the rest of the macTLS tree.
 
 2. Add the two files to a **dedicated** CW8 project (NOT MacSurf.mcp).
    The probe should be tested in isolation so the rest of MacSurf's

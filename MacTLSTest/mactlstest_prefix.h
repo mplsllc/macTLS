@@ -1,21 +1,21 @@
 /*
- * macssltest_prefix.h
+ * mactlstest_prefix.h
  *
- * CodeWarrior 8 project prefix for the MacSSLTest standalone Carbon
+ * CodeWarrior 8 project prefix for the MacTLSTest standalone Carbon
  * app. This file is injected before every translation unit in
- * MacSSLTest.mcp -- including all 253 vendored BearSSL .c files and
- * the two macSSL/os9 sources.
+ * MacTLSTest.mcp -- including all 253 vendored BearSSL .c files and
+ * the two macTLS/os9 sources.
  *
  * Mirrors the relevant subset of MacSurf's macsurf_prefix.h, minus
- * NetSurf-specific defines. Adds the macSSL CW8 compatibility shim so
+ * NetSurf-specific defines. Adds the macTLS CW8 compatibility shim so
  * BearSSL builds cleanly without upstream edits.
  *
- * In the CW8 IDE: Edit -> MacSSLTest Settings -> C/C++ Language ->
- * Prefix File: macssltest_prefix.h
+ * In the CW8 IDE: Edit -> MacTLSTest Settings -> C/C++ Language ->
+ * Prefix File: mactlstest_prefix.h
  */
 
-#ifndef MACSSLTEST_PREFIX_H
-#define MACSSLTEST_PREFIX_H
+#ifndef MACTLSTEST_PREFIX_H
+#define MACTLSTEST_PREFIX_H
 
 /*
  * MacTypes.h must come first to lock in Apple's bool / true / false
@@ -34,7 +34,7 @@
  *
  * Pre-define every plausible include guard so whatever `Threads.h`
  * CW8 finds is processed once-as-empty. We don't use the Thread
- * Manager anywhere in macSSL or BearSSL, so an empty Threads.h is
+ * Manager anywhere in macTLS or BearSSL, so an empty Threads.h is
  * harmless. The stub typedefs below cover the small surface that
  * CoreServices.h's downstream headers reference by name.
  */
@@ -48,7 +48,7 @@
  * CarbonCore headers (e.g. NSLCore.h) reference by name. Intentionally
  * minimal --- code that genuinely uses the Thread Manager will fail to
  * link, which is what we want; we have no business calling
- * YieldToAnyThread() etc. from inside macSSL. */
+ * YieldToAnyThread() etc. from inside macTLS. */
 typedef long        ThreadID;
 typedef long        ThreadStyle;
 typedef short       ThreadOptions;
@@ -94,4 +94,4 @@ typedef ThreadTerminationProcPtr  ThreadTerminationUPP;
  */
 #include "ostls_cw8_prefix.h"
 
-#endif /* MACSSLTEST_PREFIX_H */
+#endif /* MACTLSTEST_PREFIX_H */

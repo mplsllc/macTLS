@@ -4,126 +4,126 @@
 # Count: 41 files
 #
 
-macSSL/bearssl/src/ec/ec_c25519_m62.c
+macTLS/bearssl/src/ec/ec_c25519_m62.c
     62-bit Curve25519 variant; same hazard. Use ec_c25519_m31.
 
-macSSL/bearssl/src/ec/ec_c25519_m64.c
+macTLS/bearssl/src/ec/ec_c25519_m64.c
     64-bit Curve25519; same hazard. Use ec_c25519_m31.
 
-macSSL/bearssl/src/ec/ec_p256_m62.c
+macTLS/bearssl/src/ec/ec_p256_m62.c
     62-bit P-256 variant; same hazard. Use ec_p256_m31.
 
-macSSL/bearssl/src/ec/ec_p256_m64.c
+macTLS/bearssl/src/ec/ec_p256_m64.c
     64-bit P-256; CW8 PPC LP32 + 64-bit codegen risk. Use ec_p256_m31.
 
-macSSL/bearssl/src/hash/ghash_ctmul64.c
+macTLS/bearssl/src/hash/ghash_ctmul64.c
     64-bit GHASH. Use ghash_ctmul (32-bit) or ghash_ctmul32.
 
-macSSL/bearssl/src/hash/ghash_pclmul.c
+macTLS/bearssl/src/hash/ghash_pclmul.c
     x86 PCLMUL GHASH; wrong platform
 
-macSSL/bearssl/src/hash/ghash_pwr8.c
+macTLS/bearssl/src/hash/ghash_pwr8.c
     POWER8 GHASH; wrong CPU
 
-macSSL/bearssl/src/int/i62_modpow2.c
+macTLS/bearssl/src/int/i62_modpow2.c
     62-bit big-int modpow; 64-bit math hazard.
 
-macSSL/bearssl/src/rand/sysrng.c
+macTLS/bearssl/src/rand/sysrng.c
     POSIX/Win32 entropy bridge; replaced by os9/ostls_entropy.c
 
-macSSL/bearssl/src/ssl/ssl_hs_server.c
+macTLS/bearssl/src/ssl/ssl_hs_server.c
     TLS server handshake; client-only
 
-macSSL/bearssl/src/ssl/ssl_io.c
+macTLS/bearssl/src/ssl/ssl_io.c
     blocking br_sslio_* wrapper; cooperative engine path only
 
-macSSL/bearssl/src/ssl/ssl_rec_ccm.c
+macTLS/bearssl/src/ssl/ssl_rec_ccm.c
     CCM record layer; not required for client v0.1
 
-macSSL/bearssl/src/ssl/ssl_server.c
+macTLS/bearssl/src/ssl/ssl_server.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_full_ec.c
+macTLS/bearssl/src/ssl/ssl_server_full_ec.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_full_rsa.c
+macTLS/bearssl/src/ssl/ssl_server_full_rsa.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_mine2c.c
+macTLS/bearssl/src/ssl/ssl_server_mine2c.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_mine2g.c
+macTLS/bearssl/src/ssl/ssl_server_mine2g.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_minf2c.c
+macTLS/bearssl/src/ssl/ssl_server_minf2c.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_minf2g.c
+macTLS/bearssl/src/ssl/ssl_server_minf2g.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_minr2g.c
+macTLS/bearssl/src/ssl/ssl_server_minr2g.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_minu2g.c
+macTLS/bearssl/src/ssl/ssl_server_minu2g.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/ssl/ssl_server_minv2g.c
+macTLS/bearssl/src/ssl/ssl_server_minv2g.c
     TLS server code; MacSurf is client-only
 
-macSSL/bearssl/src/symcipher/aes_ct64.c
+macTLS/bearssl/src/symcipher/aes_ct64.c
     64-bit constant-time AES. Use aes_ct (32-bit) family.
 
-macSSL/bearssl/src/symcipher/aes_ct64_cbcdec.c
+macTLS/bearssl/src/symcipher/aes_ct64_cbcdec.c
     64-bit constant-time AES. Use aes_ct (32-bit) family.
 
-macSSL/bearssl/src/symcipher/aes_ct64_cbcenc.c
+macTLS/bearssl/src/symcipher/aes_ct64_cbcenc.c
     64-bit constant-time AES. Use aes_ct (32-bit) family.
 
-macSSL/bearssl/src/symcipher/aes_ct64_ctr.c
+macTLS/bearssl/src/symcipher/aes_ct64_ctr.c
     64-bit constant-time AES. Use aes_ct (32-bit) family.
 
-macSSL/bearssl/src/symcipher/aes_ct64_ctrcbc.c
+macTLS/bearssl/src/symcipher/aes_ct64_ctrcbc.c
     64-bit constant-time AES. Use aes_ct (32-bit) family.
 
-macSSL/bearssl/src/symcipher/aes_ct64_dec.c
+macTLS/bearssl/src/symcipher/aes_ct64_dec.c
     64-bit constant-time AES. Use aes_ct (32-bit) family.
 
-macSSL/bearssl/src/symcipher/aes_ct64_enc.c
+macTLS/bearssl/src/symcipher/aes_ct64_enc.c
     64-bit constant-time AES. Use aes_ct (32-bit) family.
 
-macSSL/bearssl/src/symcipher/aes_pwr8.c
+macTLS/bearssl/src/symcipher/aes_pwr8.c
     POWER8 AES; wrong CPU (we target G3/G4 32-bit PPC)
 
-macSSL/bearssl/src/symcipher/aes_pwr8_cbcdec.c
+macTLS/bearssl/src/symcipher/aes_pwr8_cbcdec.c
     POWER8 AES; wrong CPU (we target G3/G4 32-bit PPC)
 
-macSSL/bearssl/src/symcipher/aes_pwr8_cbcenc.c
+macTLS/bearssl/src/symcipher/aes_pwr8_cbcenc.c
     POWER8 AES; wrong CPU (we target G3/G4 32-bit PPC)
 
-macSSL/bearssl/src/symcipher/aes_pwr8_ctr.c
+macTLS/bearssl/src/symcipher/aes_pwr8_ctr.c
     POWER8 AES; wrong CPU (we target G3/G4 32-bit PPC)
 
-macSSL/bearssl/src/symcipher/aes_pwr8_ctrcbc.c
+macTLS/bearssl/src/symcipher/aes_pwr8_ctrcbc.c
     POWER8 AES; wrong CPU (we target G3/G4 32-bit PPC)
 
-macSSL/bearssl/src/symcipher/aes_x86ni.c
+macTLS/bearssl/src/symcipher/aes_x86ni.c
     x86 AES-NI intrinsics; wrong platform
 
-macSSL/bearssl/src/symcipher/aes_x86ni_cbcdec.c
+macTLS/bearssl/src/symcipher/aes_x86ni_cbcdec.c
     x86 AES-NI intrinsics; wrong platform
 
-macSSL/bearssl/src/symcipher/aes_x86ni_cbcenc.c
+macTLS/bearssl/src/symcipher/aes_x86ni_cbcenc.c
     x86 AES-NI intrinsics; wrong platform
 
-macSSL/bearssl/src/symcipher/aes_x86ni_ctr.c
+macTLS/bearssl/src/symcipher/aes_x86ni_ctr.c
     x86 AES-NI intrinsics; wrong platform
 
-macSSL/bearssl/src/symcipher/aes_x86ni_ctrcbc.c
+macTLS/bearssl/src/symcipher/aes_x86ni_ctrcbc.c
     x86 AES-NI intrinsics; wrong platform
 
-macSSL/bearssl/src/symcipher/chacha20_sse2.c
+macTLS/bearssl/src/symcipher/chacha20_sse2.c
     x86 SSE2 ChaCha20; wrong platform
 
-macSSL/bearssl/src/symcipher/poly1305_ctmulq.c
+macTLS/bearssl/src/symcipher/poly1305_ctmulq.c
     64-bit Poly1305. Use poly1305_ctmul (32-bit).
 

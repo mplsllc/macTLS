@@ -15,7 +15,7 @@
  *
  * Returns noErr on pass. On fail, returns a code in the 200..220 range
  * identifying which pair and pattern broke (see kOSTLSMul64* below).
- * The smoke-test result window in MacSSLTest/main.c maps each code to
+ * The smoke-test result window in MacTLSTest/main.c maps each code to
  * a human-readable label.
  */
 

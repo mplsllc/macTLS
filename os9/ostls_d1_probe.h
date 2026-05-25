@@ -15,7 +15,7 @@
  * This is the test that the C1 listener investigation should have
  * had first -- it would have isolated the passive-bind failure to
  * the explicit-address codepath much earlier. Keeping it permanent
- * in MacSSLTest gives us a low-cost regression for the async OT
+ * in MacTLSTest gives us a low-cost regression for the async OT
  * path that the v0.2 OSTLSConnection depends on.
  */
 

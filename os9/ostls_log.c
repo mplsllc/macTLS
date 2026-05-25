@@ -3,7 +3,7 @@
  *
  * Resolves the Desktop folder via FindFolder + the standard
  * kOnSystemDisk / kDesktopFolderType pair. Creates / truncates
- * MacSSLTest.log there. Each write call does:
+ * MacTLSTest.log there. Each write call does:
  *
  *   FSWrite(refnum, &len, buf)
  *   FSWrite(refnum, &cr_len, &cr_byte)
@@ -292,7 +292,7 @@ OSTLS_LogInit(void)
     short desk_vol;
     FSSpec spec;
     OSStatus err;
-    const unsigned char log_name_pstr[] = "\pMacSSLTest.log";
+    const unsigned char log_name_pstr[] = "\pMacTLSTest.log";
 
     if (gLogOpen) {
         OSTLS_LogClose();

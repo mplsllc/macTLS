@@ -1,5 +1,5 @@
 /*
- * ostls_fetch.c -- macSSL public library implementation. See
+ * ostls_fetch.c -- macTLS public library implementation. See
  * os9/ostls_fetch.h for the API contract.
  *
  * Extracted from the verified Stage B4 probe path
@@ -14,7 +14,7 @@
  *   3. Open OT endpoint, bind NULL (qlen=0 outbound), OTConnect.
  *   4. Init BearSSL client with br_x509_minimal + 10 embedded roots.
  *      Inject Stage A entropy (insecure stub -- v1 limit, called out
- *      in docs/macssl-library-api.md).
+ *      in docs/mactls-library-api.md).
  *   5. Reset against server_name (drives SNI + hostname match).
  *   6. Drive handshake + app-data send/recv via SENDREC/RECVREC /
  *      SENDAPP/RECVAPP against OTSnd/OTRcv until handshake completes,
@@ -191,7 +191,7 @@ OSTLS_Fetch(const char *host,
     sprintf(request_line,
         "GET %.80s HTTP/1.0\r\n"
         "Host: %.80s\r\n"
-        "User-Agent: macSSL/0.1\r\n"
+        "User-Agent: macTLS/0.1\r\n"
         "Connection: close\r\n"
         "\r\n",
         path, server_name);
@@ -265,7 +265,7 @@ OSTLS_Fetch(const char *host,
                             anchors, anchors_count);
     br_x509_minimal_set_time(&gFetchX509, br_days, br_seconds);
 
-    entropy_err = OSTLS_InjectStageAEntropy(&gFetchClient.eng);
+    entropy_err = OSTLS_InjectEntropy(&gFetchClient.eng);
     if (entropy_err != 0) {
         fetch_status(out_msg, out_msg_len,
             "OSTLS_Fetch: entropy inject FAIL", 0);

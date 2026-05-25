@@ -36,7 +36,7 @@
  * Deliberately NOT including <Threads.h> -- on some CW8 installs an
  * unrelated HotSpot JVM Threads.h is reachable via the system search
  * path and cascades into oobj.h / typedefs.h / winnt.h / winbase.h
- * errors. macssltest_prefix.h pre-defines several known JVM guards
+ * errors. mactlstest_prefix.h pre-defines several known JVM guards
  * to neutralise that file, but the HotSpot variant on this machine
  * uses a guard outside that set. Since B1 doesn't call any Thread
  * Manager functions, the simplest fix is to not pull Threads.h in

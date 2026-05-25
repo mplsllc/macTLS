@@ -1,7 +1,7 @@
 /*
  * ostls_entropy.h
  *
- * Stage A entropy stub for macSSL.
+ * Stage A entropy stub for macTLS.
  *
  * !!! THIS IS NOT CRYPTOGRAPHICALLY SECURE !!!
  *
@@ -25,18 +25,22 @@
 
 #include "bearssl_ssl.h"
 
-#define OSTLS_ENTROPY_STAGE_A_INSECURE 1
+/*
+ * Inject entropy into a BearSSL SSL engine.
+ *
+ * In v0.1/v0.2 this was an insecure stub (Stage A).
+ * In v1.0 this gathers data from the global entropy pool.
+ */
+int OSTLS_InjectEntropy(br_ssl_engine_context *eng);
 
 /*
- * Inject Stage A weak entropy into a BearSSL SSL engine. Pulls a small
- * number of bytes from TickCount, Microseconds, mouse position, stack
- * address, and a fixed Stage-A identifier, and feeds them through
- * br_ssl_engine_inject_entropy(). Safe to call before
- * br_ssl_client_reset().
+ * Gathers entropy from jittery sources:
+ *   - Mouse position/delta
+ *   - Keyboard latency jitter (if called from event loop)
+ *   - System clock (TickCount/Microseconds)
  *
- * Returns 0 on success, a non-zero OSStatus-like value on failure
- * (currently always returns 0; reserved for future expansion).
+ * Should be called periodically (e.g. 60Hz from the app's idle loop).
  */
-int OSTLS_InjectStageAEntropy(br_ssl_engine_context *eng);
+void OSTLS_CollectEntropy(void);
 
 #endif /* OSTLS_ENTROPY_H */

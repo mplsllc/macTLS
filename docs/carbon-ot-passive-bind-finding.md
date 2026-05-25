@@ -13,7 +13,7 @@ are accepted, and only with OT picking the local address.
 
 ## How we got here
 
-macSSL's original design was a **local HTTP proxy app** that classic
+macTLS's original design was a **local HTTP proxy app** that classic
 OS 9 browsers (Classilla, iCab, MacSurf) would point at as their HTTP
 proxy. The proxy would `OTBind` to `127.0.0.1:8765`, accept
 connections from local browsers, perform the upstream HTTPS fetch via
@@ -85,7 +85,7 @@ Searched for:
 - **No documented Carbon CFM TCP listener exists in any archive**
   (Apple opensource.apple.com, GitHub mirrors, Macintosh Garden,
   Macintosh Repository, archive.org Wayback). Every classic-Mac TLS
-  project we found (Certainly, bbenchoff/MacSSL, Crypto Ancienne,
+  project we found (Certainly, bbenchoff/MacTLS, Crypto Ancienne,
   antscode/mbedtls-Mac-68k) is client-only or uses GUSI's POSIX
   socket abstraction over MacTCP/OT rather than native OT directly.
   Apple's own HTTP Server sample is pre-Carbon and uses the
@@ -108,9 +108,9 @@ years — suggests we're not the first to discover this limit.
 | `OTBind(ep, { addr=NULL, qlen >= 1 })` (passive on OT-picked port) | works (probeC, port 49423) |
 | `OTBind(ep, { addr=<explicit InetAddress>, qlen=anything })` | **fails -3150** |
 
-## Implications for macSSL
+## Implications for macTLS
 
-The original architecture — *"macSSL Proxy listening on a fixed
+The original architecture — *"macTLS Proxy listening on a fixed
 port; browsers configure HTTP proxy to that port"* — **cannot ship
 on Carbon CFM**. There is no caller-chosen port; only OT-picked
 ephemeral ports work, and those change between launches.
@@ -119,13 +119,13 @@ Two architectural options remain:
 
 ### Option A — Library mode (recommended)
 
-Skip the listener entirely. macSSL ships as a **static C library**
+Skip the listener entirely. macTLS ships as a **static C library**
 that MacSurf (and any other classic Mac browser project) links
 directly. The library exposes a single `OSTLS_Fetch(url, ...)` entry
 point built on the verified Stage B4 code path. No `OTBind` with
 caller-chosen address ever happens.
 
-This is the architecture **docs/macssl-integration-notes.md (Stage
+This is the architecture **docs/mactls-integration-notes.md (Stage
 B5)** already describes in detail. The integration mechanics are
 already designed and the per-fetch memory footprint is documented
 (~50 KB, comfortable in MacSurf's 16 MB Carbon partition).
@@ -139,13 +139,13 @@ Pros:
 Cons:
 - Coupled to MacSurf rather than system-wide. Other browsers
   (Classilla, iCab) won't benefit unless they're separately
-  patched to link macSSL. Crypto Ancienne's `carl` (MPW shell
+  patched to link macTLS. Crypto Ancienne's `carl` (MPW shell
   tool) remains the only existing option for those.
 
 ### Option B — OT-picked port + UX exposure
 
 Keep the proxy architecture but accept that the port is whatever
-OT assigns at startup. macSSL Proxy starts → `OTBind(NULL, qlen=1)`
+OT assigns at startup. macTLS Proxy starts → `OTBind(NULL, qlen=1)`
 → logs `"listening on port 49423"` → user reads the port from the
 window and configures their browser to `127.0.0.1:49423`. Next
 launch, the port may be different; user updates browser config.
@@ -166,7 +166,7 @@ Cons:
 **Recommendation: Option A.** It's the simpler architecture, the
 B5 integration notes already lay it out, and the verified Stage B4
 code is the library API surface in waiting. Option B can be
-explored later if there's demand to ship macSSL as a standalone
+explored later if there's demand to ship macTLS as a standalone
 service for non-MacSurf browsers.
 
 ## What to do next (concrete)
@@ -175,11 +175,11 @@ service for non-MacSurf browsers.
 
 2. Move the C1 listener code to `os9/archive/` (or delete; commit history preserves it). It's no longer in the build target but the git log is the authoritative reference for "we tried this for 14 rounds and it didn't work."
 
-3. Update `MacSSLTest` to call the new `OSTLS_Fetch` API directly, replacing the C1 stage. MacSSLTest stays the regression harness.
+3. Update `MacTLSTest` to call the new `OSTLS_Fetch` API directly, replacing the C1 stage. MacTLSTest stays the regression harness.
 
-4. Document the library API in `docs/macssl-library-api.md` for MacSurf-side consumers.
+4. Document the library API in `docs/mactls-library-api.md` for MacSurf-side consumers.
 
 5. On the MacSurf side (separate project), implement `macos9_https_fetcher.c` that calls into the library when an HTTPS URL is requested. This is the Stage B5 integration that was already planned.
 
-The macSSL crypto work is done. What remains is a packaging change,
+The macTLS crypto work is done. What remains is a packaging change,
 not a new technical milestone.

@@ -6,7 +6,7 @@
  * sends (up to a caller-supplied buffer), and close cleanly. No
  * parsing, no TLS, no upstream fetch. The narrow gate is:
  *
- *   Does Mac OS 9 + Open Transport let MacSSLTest act as a TCP server
+ *   Does Mac OS 9 + Open Transport let MacTLSTest act as a TCP server
  *   from inside the same Carbon CFM binary that already works as a
  *   TCP client?
  *

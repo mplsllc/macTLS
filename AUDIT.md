@@ -1,6 +1,6 @@
 # BearSSL CW8 / C89 audit (Stage 0)
 
-**Audited tree:** `macSSL/bearssl/` — upstream commit `7bea48e5` (2026-04-06)
+**Audited tree:** `macTLS/bearssl/` — upstream commit `7bea48e5` (2026-04-06)
 **Scanned:** 309 files (294 `.c`, 15 `.h`) — `inc/` + `src/` only
 **Tool:** `tools/audit_cw8_compat.py` → `tools/audit_report.json`
 
@@ -281,29 +281,29 @@ for.
 
 ### Architecture pivot (2026-05-18)
 
-macSSL is no longer integrated into MacSurf. It ships as a **standalone
+macTLS is no longer integrated into MacSurf. It ships as a **standalone
 local HTTP proxy Carbon app** that any OS 9 browser can configure as
 its HTTP proxy (`127.0.0.1:8765`). Validation now happens in a separate
-project `MacSSLTest.mcp` (the bare Carbon harness for Stage A), which
-later evolves into the real MacSSL Proxy app over Stages B/C.
+project `MacTLSTest.mcp` (the bare Carbon harness for Stage A), which
+later evolves into the real MacTLS Proxy app over Stages B/C.
 
 Stage 0 + Stage A source-side artifacts unchanged. What pivoted: the
 validation target (no longer MacSurf) and Stage B (no longer "wire into
 macos9_http_fetcher.c", now "build a TCP listener + proxy parser inside
-MacSSL Proxy").
+MacTLS Proxy").
 
 ### Mac validation gate
 
 Stage A passes when:
 
 ```
-1. MacSSLTest.mcp is created in CW8 per MacSSLTest/README.md
-2. Project prefix is MacSSLTest/macssltest_prefix.h
+1. MacTLSTest.mcp is created in CW8 per MacTLSTest/README.md
+2. Project prefix is MacTLSTest/mactlstest_prefix.h
 3. Project contains all 253 files from tools/bearssl_cw8_files.txt
-   plus os9/ostls_entropy.c, os9/ostls_smoketest.c, MacSSLTest/main.c,
-   and MacSSLTest/MacSSLTest.rsrc
+   plus os9/ostls_entropy.c, os9/ostls_smoketest.c, MacTLSTest/main.c,
+   and MacTLSTest/MacTLSTest.rsrc
 4. CW8 builds with no missing or duplicate symbols
-5. Launched MacSSLTest app displays "macSSL Stage A smoke: OK" on G3
+5. Launched MacTLSTest app displays "macTLS Stage A smoke: OK" on G3
 6. Same result on G4
 ```
 
@@ -351,7 +351,7 @@ Stage C:  HTTP proxy listener on 127.0.0.1:8765 + request parser
 Stage D:  upstream HTTPS fetch (BearSSL handshake + GET + response relay)
 ```
 
-After Stage D, MacSSLTest.mcp gets renamed to MacSSLProxy.mcp (same
+After Stage D, MacTLSTest.mcp gets renamed to MacTLSProxy.mcp (same
 project file, just refocused). Stage E is browser compatibility testing
 (Classilla, iCab, MacSurf all configured to use 127.0.0.1:8765). Stage
 F is trust store + pinning + UI. Stage G is packaging (Startup Items

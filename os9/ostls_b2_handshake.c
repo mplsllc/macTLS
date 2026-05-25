@@ -174,7 +174,7 @@ static const br_x509_class insecure_x509_vtable = {
 /*
  * Lives in BSS, not on the stack. br_ssl_client_context is ~10 KB and
  * BR_SSL_BUFSIZE_BIDI is 33 178 bytes; together this is the bulk of
- * MacSSLTest's resident memory once Stage B is active. The minimal
+ * MacTLSTest's resident memory once Stage B is active. The minimal
  * x509 context is created but unused -- br_ssl_client_init_full
  * requires one for cipher-suite setup, after which we substitute the
  * vtable via br_ssl_engine_set_x509.
@@ -294,7 +294,7 @@ OSTLS_B2_Handshake_Probe(const char *target_host_port,
         (const br_x509_class **)&gB2InsecureX509.vtable);
     gB2InsecureX509.vtable = &insecure_x509_vtable;
 
-    entropy_err = OSTLS_InjectStageAEntropy(&gB2Client.eng);
+    entropy_err = OSTLS_InjectEntropy(&gB2Client.eng);
     if (entropy_err != 0) {
         b2_status(out_msg, out_msg_len, "B2: entropy inject FAIL", 0);
         OTSndOrderlyDisconnect(ep);
@@ -425,7 +425,7 @@ OSTLS_B2_Handshake_Probe(const char *target_host_port,
 
     /* Handshake succeeded. Report the negotiated cipher suite using a
      * short label where we recognise the suite ID, otherwise emit the
-     * raw hex. Keep the string under ~50 chars so the MacSSLTest result
+     * raw hex. Keep the string under ~50 chars so the MacTLSTest result
      * window doesn't truncate it. */
     {
         const br_ssl_session_parameters *sess;

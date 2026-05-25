@@ -1,7 +1,7 @@
 /*
- * ostls_async.c -- macSSL v0.2 non-blocking TLS stream API. See
+ * ostls_async.c -- macTLS v0.2 non-blocking TLS stream API. See
  * os9/ostls_async.h for the public contract and
- * docs/macssl-v0.2-async-design.md for the design rationale.
+ * docs/mactls-v0.2-async-design.md for the design rationale.
  *
  * Architecture in one paragraph: every OT call goes through an
  * async dispatch path with a notifier installed at open time. The
@@ -152,6 +152,7 @@ struct OSTLSConnection {
     Boolean started;
     Boolean disposed;
     Boolean close_requested;        /* caller called OSTLS_Close */
+    Boolean peer_closed;
 
     /* ----- OT machinery (stable buffers; outlive OT calls) ----- */
     EndpointRef ep;
@@ -241,12 +242,10 @@ ostls_notifier(void *context, OTEventCode event,
 
     case T_CONNECT:
         /*
-         * MUST consume the connect event before any later OT call on
-         * this endpoint. OTRcvConnect is safe at interrupt time per
-         * Apple OT documentation and Certainly's ot_transport.c
-         * follows the same pattern.
+         * Do NOT call OTRcvConnect here at interrupt time. Stash the
+         * flag and let Pump handle it at app-time where it's safe
+         * to handle errors and state transitions.
          */
-        OTRcvConnect(conn->ep, NULL);
         conn->nf_connect_complete = true;
         break;
 
@@ -308,7 +307,7 @@ OSTLS_New(OSTLSConnection **out_conn, const OSTLSConfig *config)
      * fields that matter. */
     conn->state = kOSTLSStateIdle;
     conn->os_err = noErr;
-    conn->ot_err = noErr;
+    conn->ot_err = 0x7FFFFFFF;  /* Sentinel: not set yet */
     conn->br_err = 0;
     conn->cipher_suite = 0;
 
@@ -451,14 +450,23 @@ static OSTLSEvent
 ostls_fail(OSTLSConnection *conn, OSErr os_err,
            OSStatus ot_err, int br_err)
 {
+    /* Trap for the "ghost" 2009 error with ot=0. */
+    if (os_err == 2009 && ot_err == 0) {
+        OSTLS_LogLine("TRAP: ostls_fail called with os_err=2009 and ot=0");
+    }
+
+    /* Always update error codes if they haven't been set yet, even
+     * if we're already in the Failed state. This helps capture the
+     * root cause if a failure cascades. */
+    if (conn->os_err == noErr) conn->os_err = os_err;
+    if (conn->ot_err == 0x7FFFFFFF) conn->ot_err = ot_err;
+    if (br_err != 0 && conn->br_err == 0) conn->br_err = br_err;
+
     if (conn->state == kOSTLSStateFailed ||
         conn->state == kOSTLSStateClosed) {
         return kOSTLSEventNone;
     }
     conn->state = kOSTLSStateFailed;
-    if (conn->os_err == noErr) conn->os_err = os_err;
-    if (ot_err != noErr && conn->ot_err == noErr) conn->ot_err = ot_err;
-    if (br_err != 0 && conn->br_err == 0) conn->br_err = br_err;
     return kOSTLSEventFailed;
 }
 
@@ -522,7 +530,7 @@ ostls_setup_bearssl(OSTLSConnection *conn)
                             anchors, anchors_count);
     br_x509_minimal_set_time(&conn->xc, br_days, br_seconds);
 
-    entropy_err = OSTLS_InjectStageAEntropy(&conn->sc.eng);
+    entropy_err = OSTLS_InjectEntropy(&conn->sc.eng);
     if (entropy_err != 0) {
         return ostls_fail(conn, (OSErr)kOSTLSAsync_EntropyFail,
                           noErr, 0);
@@ -647,6 +655,14 @@ pump_connect_step(OSTLSConnection *conn, UInt32 *steps_used)
             return ostls_fail(conn, (OSErr)kOSTLSAsync_OTConnectFail,
                               conn->nf_last_result, 0);
         }
+
+        /* Consume the connect event at app-time. */
+        oterr = OTRcvConnect(conn->ep, NULL);
+        if (oterr != noErr) {
+            return ostls_fail(conn, (OSErr)kOSTLSAsync_OTConnectFail,
+                              oterr, 0);
+        }
+
         conn->connect_phase = kConnectPhase_Done;
         /* Transition to handshaking. */
         conn->state = kOSTLSStateHandshaking;
@@ -675,36 +691,76 @@ pump_ot_recv_into_bearssl(OSTLSConnection *conn)
     unsigned char *rbuf;
     size_t rlen;
     OTResult got;
+    OTResult state;
 
     rbuf = br_ssl_engine_recvrec_buf(&conn->sc.eng, &rlen);
     if (rlen == 0) return 0;
 
+    state = OTGetEndpointState(conn->ep);
+    if (state != T_DATAXFER && state != T_OUTREL) {
+        /* Not in a state where we can receive data. */
+        br_ssl_engine_recvrec_ack(&conn->sc.eng, 0);
+        conn->nf_data_pending = false;
+        if (conn->state == kOSTLSStateOpen || conn->state == kOSTLSStateClosing) {
+            br_ssl_engine_close(&conn->sc.eng);
+        }
+        return 1;
+    }
+
     got = OTRcv(conn->ep, rbuf, (long)rlen, NULL);
     conn->dbg_ot_recv_calls++;
+
     if (got > 0) {
         br_ssl_engine_recvrec_ack(&conn->sc.eng, (size_t)got);
         conn->nf_data_pending = false;  /* drained for now */
         conn->dbg_ot_recv_bytes += (UInt32)got;
         return 1;
-    }
-    if (got == 0) {
-        /* Peer closed; BearSSL will see this as an unexpected close. */
-        conn->nf_data_pending = false;
-        return 0;
-    }
-    if (got == kOTNoDataErr) {
+    } else if (got == kOTNoDataErr) {
+        if (conn->nf_ord_release && !conn->ord_consumed) {
+            /* Drained all data; now we can safely consume the release. */
+            OTRcvOrderlyDisconnect(conn->ep);
+            conn->ord_consumed = true;
+            conn->peer_closed = true;
+            return 1;
+        }
         conn->nf_data_pending = false;
         conn->dbg_ot_recv_nodata++;
         return 0;
-    }
-    if (got == kOTLookErr) {
-        /* An OT event arrived between OTRcv and now. Drain it next
-         * tick. */
+    } else if (got == 0) {
+        /* Just in case some OT implementations return 0 for EOF. */
+        if (!conn->ord_consumed) {
+            OTRcvOrderlyDisconnect(conn->ep);
+            conn->ord_consumed = true;
+        }
+        conn->peer_closed = true;
+        conn->nf_data_pending = false;
+        return 1;
+    } else if (got == kOTLookErr) {
+        /* An OT event is pending. Look it up. */
+        OTResult look = OTLook(conn->ep);
+        if (look == T_ORDREL) {
+            if (!conn->ord_consumed) {
+                OTRcvOrderlyDisconnect(conn->ep);
+                conn->ord_consumed = true;
+            }
+            conn->peer_closed = true;
+            conn->nf_data_pending = false;
+            return 1;
+        } else if (look == T_DISCONNECT) {
+            if (!conn->disc_consumed) {
+                OTRcvDisconnect(conn->ep, NULL);
+                conn->disc_consumed = true;
+            }
+            ostls_fail(conn, (OSErr)kOSTLSAsync_PeerClosed, look, 0);
+            return -1;
+        }
         return 0;
+    } else {
+        /* Fatal error. */
+        OSTLS_LogLinef("FAIL: pump_ot_recv got=%ld", (long)got);
+        ostls_fail(conn, (OSErr)kOSTLSAsync_OTRcvFail, got, 0);
+        return -1;
     }
-    /* Real error. */
-    ostls_fail(conn, (OSErr)kOSTLSAsync_OTRcvFail, got, 0);
-    return -1;
 }
 
 
@@ -718,9 +774,20 @@ pump_ot_send_from_bearssl(OSTLSConnection *conn)
     unsigned char *sbuf;
     size_t slen;
     OTResult sent;
+    OTResult state;
 
     sbuf = br_ssl_engine_sendrec_buf(&conn->sc.eng, &slen);
     if (slen == 0) return 0;
+
+    state = OTGetEndpointState(conn->ep);
+    if (state != T_DATAXFER && state != T_OUTCON) {
+        /* Not in a state to send (e.g., T_IDLE after disconnect).
+         * BearSSL wants to send a close_notify but the socket is gone.
+         * Just ack the bytes to drain the buffer and let the state
+         * machine progress to CLOSED. */
+        br_ssl_engine_sendrec_ack(&conn->sc.eng, slen);
+        return 1;
+    }
 
     sent = OTSnd(conn->ep, sbuf, (long)slen, 0);
     conn->dbg_ot_send_calls++;
@@ -739,6 +806,24 @@ pump_ot_send_from_bearssl(OSTLSConnection *conn)
         return 0;
     }
     if (sent == kOTLookErr) {
+        OTResult look = OTLook(conn->ep);
+        if (look == T_ORDREL) {
+            if (!conn->ord_consumed) {
+                OTRcvOrderlyDisconnect(conn->ep);
+                conn->ord_consumed = true;
+            }
+            conn->peer_closed = true;
+            /* Acknowledge BearSSL's send since we can't push it. */
+            br_ssl_engine_sendrec_ack(&conn->sc.eng, slen);
+            return 1;
+        } else if (look == T_DISCONNECT) {
+            if (!conn->disc_consumed) {
+                OTRcvDisconnect(conn->ep, NULL);
+                conn->disc_consumed = true;
+            }
+            ostls_fail(conn, (OSErr)kOSTLSAsync_PeerClosed, look, 0);
+            return -1;
+        }
         return 0;
     }
     ostls_fail(conn, (OSErr)kOSTLSAsync_OTSndFail, sent, 0);
@@ -883,20 +968,36 @@ pump_bearssl_step(OSTLSConnection *conn, OSTLSEvent *best_event)
     }
 
     if ((state & BR_SSL_SENDREC) != 0) {
-        return pump_ot_send_from_bearssl(conn);
+        int r = pump_ot_send_from_bearssl(conn);
+        if (r != 0) return r;
     }
-    if ((state & BR_SSL_RECVREC) != 0) {
-        return pump_ot_recv_into_bearssl(conn);
+    if ((state & BR_SSL_RECVREC) != 0 && !conn->peer_closed) {
+        int r = pump_ot_recv_into_bearssl(conn);
+        if (r != 0) return r;
     }
-    if (conn->state == kOSTLSStateOpen) {
+    if (conn->state == kOSTLSStateOpen || conn->state == kOSTLSStateClosing) {
         if ((state & BR_SSL_RECVAPP) != 0) {
-            return pump_bearssl_recvapp_to_ring(conn, best_event);
+            int r = pump_bearssl_recvapp_to_ring(conn, best_event);
+            if (r != 0) return r;
         }
         if (conn->write_avail > 0 &&
             (state & BR_SSL_SENDAPP) != 0) {
-            return pump_ring_to_bearssl_sendapp(conn, best_event);
+            int r = pump_ring_to_bearssl_sendapp(conn, best_event);
+            if (r != 0) return r;
         }
     }
+
+    if (conn->peer_closed && conn->state != kOSTLSStateClosed && conn->state != kOSTLSStateFailed) {
+        if ((state & BR_SSL_RECVAPP) != 0) {
+            /* Still draining application data */
+            return 0;
+        }
+        /* No more app data and peer closed. Force close. */
+        conn->state = kOSTLSStateClosed;
+        event_bump(best_event, kOSTLSEventClosed);
+        return 1;
+    }
+
     return 0;
 }
 
@@ -918,11 +1019,11 @@ pump_handshake_or_open_pre(OSTLSConnection *conn)
                 (OSErr)kOSTLSAsync_HandshakeTimeout, noErr, 0);
         }
     }
-    if (conn->nf_ord_release && !conn->ord_consumed) {
-        OTRcvOrderlyDisconnect(conn->ep);
-        conn->ord_consumed = true;
-        /* Don't transition state yet; let any remaining plaintext
-         * drain via BearSSL CLOSED handling above. */
+    if (conn->nf_disconnect && !conn->disc_consumed) {
+        OTRcvDisconnect(conn->ep, NULL);
+        conn->disc_consumed = true;
+        return ostls_fail(conn, (OSErr)kOSTLSAsync_OTSndFail,
+                          conn->nf_last_result, 0);
     }
     return kOSTLSEventNone;
 }

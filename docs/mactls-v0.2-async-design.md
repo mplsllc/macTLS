@@ -1,4 +1,4 @@
-# macSSL v0.2 — Non-blocking TLS stream API
+# macTLS v0.2 — Non-blocking TLS stream API
 
 **Status: design draft. No code yet.**
 
@@ -14,10 +14,10 @@ v1.0.0  production entropy. Security claim is real.
 ```
 
 The architectural call in v0.2 — and the load-bearing decision this
-doc is committing to — is that **macSSL stops trying to be an HTTP
+doc is committing to — is that **macTLS stops trying to be an HTTP
 library**. It becomes a non-blocking TLS transport. HTTP request
 formatting, response parsing, chunked-transfer decoding, redirects,
-session lifecycle: all of that lives in the caller. macSSL owns
+session lifecycle: all of that lives in the caller. macTLS owns
 exactly: TCP via Open Transport, TLS via BearSSL, the bytes between
 them, and the validation. Nothing else.
 
@@ -77,7 +77,7 @@ typedef struct OSTLSConfig {
     UInt32 connect_timeout_ticks;      /* 0 = use default (30 s at 60 Hz)    */
     UInt32 handshake_timeout_ticks;    /* 0 = use default (30 s at 60 Hz)    */
 
-    void *user_refcon;                 /* opaque to macSSL; for caller use   */
+    void *user_refcon;                 /* opaque to macTLS; for caller use   */
 } OSTLSConfig;
 
 typedef struct OSTLSDiagnostics {
@@ -242,13 +242,13 @@ an instance of):
 
 4. **Buffering layer between BearSSL records and caller reads.**
    BearSSL hands us records in 16 KB chunks; the caller may
-   `OSTLS_Read` 256 bytes at a time. macSSL keeps a small ring
+   `OSTLS_Read` 256 bytes at a time. macTLS keeps a small ring
    buffer (or just a position-tracked linear buffer) so partial
    reads don't lose data. Same on the write side: the caller queues
    plaintext into the connection's write buffer; Pump feeds it into
    BearSSL's sendapp buf as room becomes available.
 
-5. **OTClientContext.** macSSL keeps using
+5. **OTClientContext.** macTLS keeps using
    `OTAsyncOpenEndpointInContext` against the same `g_ostls_ot_context`
    that v0.1 set up. No change to OT initialisation contract.
 
@@ -267,13 +267,13 @@ caller owns the pointer.
 | Caller action | Connection state | Allowed? |
 |---|---|---|
 | `OSTLS_New` then `OSTLS_Dispose` (never Start) | Idle → gone | yes |
-| `OSTLS_New` then `OSTLS_Dispose` (forget to Close) | any → gone | yes; macSSL aborts the connection internally |
+| `OSTLS_New` then `OSTLS_Dispose` (forget to Close) | any → gone | yes; macTLS aborts the connection internally |
 | `OSTLS_New` then `OSTLS_Close` then `OSTLS_Dispose` | any → Closed → gone | yes; preferred |
 | `OSTLS_Write` then `OSTLS_Dispose` without draining reads | Open → gone | yes; pending response bytes are discarded |
 | Calling `OSTLS_Pump` after `Failed` | Failed | legal; returns immediately with `kOSTLSEventFailed` |
 | Calling any function on a `Disposed` connection | gone | UB; caller's responsibility |
 
-Caller is expected to track the pointer; macSSL does not maintain
+Caller is expected to track the pointer; macTLS does not maintain
 any global "list of live connections" because that'd add reentrancy
 risk in the notifier path.
 
@@ -401,7 +401,7 @@ v0.2 ships when **all** of these hold:
    subsequent calls return 0 bytes without error until more arrive.
 7. `OSTLS_Fetch` is reimplemented on top of the async API and still
    passes the v0.1 hardware test against google.com:443.
-8. MacSSLTest's regression harness gains a Stage D2 that drives the
+8. MacTLSTest's regression harness gains a Stage D2 that drives the
    async API explicitly (separate from the convenience-wrapper test
    for `OSTLS_Fetch`):
 
@@ -423,7 +423,7 @@ Stage D2   OSTLS_Dispose OK
 - **No redirect helper.** v0.3.
 - **No session resumption.** Each connection is a fresh handshake.
 - **No connection pooling.** v0.3 if there's demand.
-- **No HTTPS-aware proxy support.** Whatever you Write, macSSL sends;
+- **No HTTPS-aware proxy support.** Whatever you Write, macTLS sends;
   whatever it receives, you Read.
 - **No certificate-pinning override.** The 10 embedded anchors are
   the trust set; v0.3 may add API to extend it.
@@ -513,7 +513,7 @@ Stage D2   OSTLS_Dispose OK
 | `ostls_async.h` | ~150 lines (API + types) |
 | `ostls_async.c` | ~600-800 lines |
 | Refactor `ostls_fetch.c` to wrap async API | ~80 lines net (mostly deletion) |
-| MacSSLTest Stage D2 wiring | ~100 lines in main.c |
+| MacTLSTest Stage D2 wiring | ~100 lines in main.c |
 
 Total: roughly 800-1000 lines of new + ~80 lines net change. Three
 weeks of focused work; could compress to two if the Pump event-loop
@@ -524,7 +524,7 @@ state machine doesn't fight back during testing.
 - **Notifier stability on real hardware.** Async OT works in
   principle (Apple's samples, Certainly, ssheven all use it) but
   the interaction with Carbon CFM specifically is less-tested
-  ground. Plan: keep Stage D (blocking) live in MacSSLTest as a
+  ground. Plan: keep Stage D (blocking) live in MacTLSTest as a
   regression baseline so we know if the async path regresses.
 - **Pump partial-progress edge cases.** "I made 4 steps and one of
   them was a partial OTSnd; should the event reflect that?" Need a
@@ -545,7 +545,7 @@ state machine doesn't fight back during testing.
 ---
 
 This document is the design checkpoint. Next step: open a fresh
-session against macSSL with this as the brief and let an
+session against macTLS with this as the brief and let an
 implementation agent draft `ostls_async.{h,c}` + the Stage D2
 wiring + the refactored `OSTLS_Fetch`. Expected output of that
 session: a fixes39-fixes45-ish series ending in a green Stage D2
@@ -604,7 +604,7 @@ Result codes namespace bumped to 2000..2017 (was unspecified in
 the brief). Disjoint from v0.1's `kOSTLSFetch_*` (1000..1014) and
 the C1 / D1 probe namespaces (700..709, 800..812).
 
-The MacSSLTest harness gained Stage D1 (after B3) and Stage D2
+The MacTLSTest harness gained Stage D1 (after B3) and Stage D2
 (after D). Stage D stays for the blocking regression baseline.
 
 Pending: hardware verification on G3 / OS 9.1. Until both Stage D

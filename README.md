@@ -1,9 +1,24 @@
-# macSSL
+# macTLS
 
-macSSL brings native HTTPS to classic Mac OS 9. It's a small C
+> **⚠️ This repository is archived.** macTLS shipped in production as
+> part of [MacSurf](https://github.com/mplsllc/macsurf) on 2026-05-25
+> (the "first-light" milestone: native HTTPS on a real G3 iMac against
+> `mactrove.com`, proxy fully retired). All ongoing development happens
+> inside the MacSurf repo at `macsurf/macTLS/`. This standalone repo is
+> kept as a reference snapshot — the architecture, the BearSSL +
+> Open Transport bridge, the cooperative async API, the Carbon-OT
+> passive-bind finding — but **it is no longer updated separately**.
+> If you're building a Classic Mac OS application that needs HTTPS,
+> pull the macTLS source out of the MacSurf repo where it ships with
+> the full Mozilla CA bundle (121 anchors) and stays current.
+
+---
+
+macTLS brings native HTTPS to classic Mac OS 9. It's a small C
 library that opens a TLS 1.2 connection from a PowerPC Mac
-application, validates the certificate chain against ten embedded
-root CAs, and returns the decrypted response bytes. Compiled under
+application, validates the certificate chain against the embedded
+root CA bundle (10 in this snapshot; 121 in the MacSurf-shipped
+version), and returns the decrypted response bytes. Compiled under
 CodeWarrior 8 Pro; verified end-to-end on a real Power Macintosh G3
 running Mac OS 9.1.
 
@@ -29,7 +44,7 @@ OSErr OSTLS_Fetch(
     UInt32      out_msg_len);
 ```
 
-One function. Statically link macSSL into your app and call it.
+One function. Statically link macTLS into your app and call it.
 MacSurf is the first downstream consumer; nothing about the API is
 MacSurf-specific.
 
@@ -75,7 +90,7 @@ In rough priority order:
 
 **v0.2 hardware verification.** The async TLS stream API is
 implemented (see `os9/ostls_async.{h,c}` and Stage D1 + D2 in
-MacSSLTest) but hasn't been exercised on real hardware yet. Until
+MacTLSTest) but hasn't been exercised on real hardware yet. Until
 both Stage D (blocking baseline) and Stage D2 (async via
 OSTLSConnection) come back green on a G3, v0.2 is "code complete,
 not validated."
@@ -85,7 +100,7 @@ transfer-encoding decoder, HTTP POST, session resumption. These
 are feature gaps; landing them gives MacSurf-side integration a
 much cleaner path to handle real sites.
 
-**v1.0 — production entropy.** macSSL's current PRNG seed
+**v1.0 — production entropy.** macTLS's current PRNG seed
 ([`os9/ostls_entropy.c`](os9/ostls_entropy.c)) mixes a `TickCount`,
 a `Microseconds` reading, a stack address, and a fixed tag into a
 32-byte buffer. It satisfies BearSSL's seeded-check but it isn't
@@ -93,14 +108,14 @@ the strong-randomness gathering a TLS implementation deserves. The
 plan for replacing it — mouse-delta gathering across an idle
 window, key latency jitter, OT notifier tick jitter, and a
 persisted seed file rolled at clean shutdown — is documented at
-[`docs/macssl-integration-notes.md`](docs/macssl-integration-notes.md)
+[`docs/mactls-integration-notes.md`](docs/mactls-integration-notes.md)
 section 3. v1.0 unlocks the "security claim is real" story.
 
 **MacSurf integration.** Land a `macos9_https_fetcher.c` in the
-MacSurf frontend that calls into macSSL via the async API. Held
+MacSurf frontend that calls into macTLS via the async API. Held
 until v0.2 is hardware-verified and v0.3 streaming makes the
 fetcher state machine cleaner. Design notes:
-[`docs/macssl-integration-notes.md`](docs/macssl-integration-notes.md).
+[`docs/mactls-integration-notes.md`](docs/mactls-integration-notes.md).
 
 ## How it's wired
 
@@ -108,7 +123,7 @@ fetcher state machine cleaner. Design notes:
 your app          OSTLS_Fetch(...)
   │
   ▼
-macSSL            (this repo, ~5 KB of glue)
+macTLS            (this repo, ~5 KB of glue)
   │
   ├─► BearSSL     vendored at 7bea48e5; ~250 .c files, MIT.
   │                 i31 bigint, X25519, ChaCha20-Poly1305,
@@ -151,7 +166,7 @@ os9/                          OS 9 integration, in the build target
   archive/                      historical references — NOT in build
 
 bearssl/                      vendored upstream (commit 7bea48e5)
-MacSSLTest/                   Carbon CFM regression harness
+MacTLSTest/                   Carbon CFM regression harness
 docs/                         design notes, run logs, investigation reports
 tools/regenerate_anchors.sh   refresh trust-anchor source from PEMs
 ```
@@ -161,11 +176,11 @@ tools/regenerate_anchors.sh   refresh trust-anchor source from PEMs
 CodeWarrior 8 Pro on real Mac OS 9. Add `bearssl/src/**/*.c`
 (skipping `bearssl/src/ssl/ssl_engine.c`, which
 `os9/ssl_engine_cw8.c` replaces), all of `os9/ostls_*.c`,
-`os9/ssl_engine_cw8.c`, and `MacSSLTest/main.c` to a Carbon CFM PPC
+`os9/ssl_engine_cw8.c`, and `MacTLSTest/main.c` to a Carbon CFM PPC
 project. Project prefix:
-`MacSSLTest/macssltest_prefix.h`. Access paths: every
+`MacTLSTest/mactlstest_prefix.h`. Access paths: every
 `bearssl/src/` subdirectory (CW8 doesn't recurse), plus
-`bearssl/inc/`, `os9/`, `MacSSLTest/`. Libraries:
+`bearssl/inc/`, `os9/`, `MacTLSTest/`. Libraries:
 `MSL_C_Carbon.Lib`, `MSL_Runtime_PPC.Lib`, `MathLib`, `CarbonLib`.
 Partition size: 16 MB preferred / 8 MB minimum.
 
@@ -173,20 +188,20 @@ For Linux-side syntax checking during development, use
 [Retro68](https://github.com/autc04/Retro68) GCC with `-std=c89
 -pedantic-errors`. The exact invocation lives in
 [`tools/regenerate_anchors.sh`](tools/regenerate_anchors.sh) and the
-[memory file](docs/macssl-integration-notes.md) for the project.
+[memory file](docs/mactls-integration-notes.md) for the project.
 
 ## Other classic-Mac TLS work
 
-macSSL didn't come out of nowhere. A few other projects are doing
+macTLS didn't come out of nowhere. A few other projects are doing
 related work:
 
 - [**Certainly**](https://github.com/minorbug/certainly) (minorbug):
   BearSSL + Open Transport, Retro68 toolchain, TLS 1.3. Closest
   sibling — different toolchain (Retro68 vs CodeWarrior 8) and
   different API style (pump-loop vs single-call) but the same
-  crypto substrate. macSSL's 10-anchor trust set matches Certainly's.
+  crypto substrate. macTLS's 10-anchor trust set matches Certainly's.
 
-- [**MacSSL** (bbenchoff)](https://github.com/bbenchoff/MacSSL):
+- [**MacTLS** (bbenchoff)](https://github.com/bbenchoff/MacTLS):
   Brian Benchoff's mbedtls/PolarSSL port to CodeWarrior Pro 4 for
   classic Mac OS 7/8/9. First public demonstration that the
   CodeWarrior + classic Mac + TLS path works at all. Frozen since
@@ -202,7 +217,7 @@ related work:
 
 Full landscape including projects that aren't worth chasing for
 this niche is at the bottom of
-[`docs/macssl-integration-notes.md`](docs/macssl-integration-notes.md).
+[`docs/mactls-integration-notes.md`](docs/mactls-integration-notes.md).
 
 ## Tags
 

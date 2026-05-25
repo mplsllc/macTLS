@@ -3,7 +3,7 @@
  *
  * Stage B1: standalone Open Transport TCP connect probe.
  *
- * Proves that the MacSSLTest binary can open a TCP endpoint, bind it,
+ * Proves that the MacTLSTest binary can open a TCP endpoint, bind it,
  * resolve a hostname via OTInitDNSAddress, and complete an OTConnect
  * to a real Internet host using the same OT pattern MacSurf's HTTP
  * fetcher uses today (OTOpenEndpointInContext, sync + blocking, no
@@ -65,7 +65,7 @@ enum {
  * Returns kOSTLSB1_OK on success, a kOSTLSB1_* code on failure.
  *
  * Requires InitOpenTransportInContext to have succeeded already (see
- * MacSSLTest/main.c). Does not require BearSSL to be initialised.
+ * MacTLSTest/main.c). Does not require BearSSL to be initialised.
  */
 OSErr OSTLS_B1_TCP_Probe(const char *target_host_port,
                          char *out_msg, size_t out_msg_len);

@@ -1,5 +1,5 @@
 /*
- * MacSSLTest -- standalone Carbon app for Stage A validation.
+ * MacTLSTest -- standalone Carbon app for Stage A validation.
  *
  * What it does (and ONLY does):
  *   1. Toolbox / Appearance init (Carbon-style, skip the deprecated
@@ -12,15 +12,15 @@
  *   - No Open Transport (smoke test is non-network by design).
  *   - No QuickTime, no Appearance themes beyond default, no menus.
  *   - No file I/O, no preferences, no settings, no resources beyond
- *     the 'carb' Carbon-fragment marker in MacSSLTest.rsrc.
+ *     the 'carb' Carbon-fragment marker in MacTLSTest.rsrc.
  *
  * Once the smoke test passes on real OS 9 hardware (and the Stage A.5
  * mul64 probe passes too), this file evolves into the seed of
- * MacSSL Proxy: replace the "show dialog + quit" tail with a TCP
+ * MacTLS Proxy: replace the "show dialog + quit" tail with a TCP
  * listener + HTTP proxy parser + BearSSL upstream fetch.
  */
 
-#include "macssltest_prefix.h"
+#include "mactlstest_prefix.h"
 
 /*
  * Avoid the <Carbon.h> umbrella. Carbon.h chains through CoreServices.h
@@ -66,7 +66,7 @@
  *   B3 (validated handshake): google.com:443 -- chains through GTS Root R1
  *                             (or GTS Root R4 for the ECDSA path), both
  *                             embedded in ostls_b3_anchors. Picked over
- *                             example.com so we're validating macSSL's
+ *                             example.com so we're validating macTLS's
  *                             X.509 path, not chasing IANA cert rotation.
  */
 #define OSTLS_B1_TARGET     "example.com:443"
@@ -76,7 +76,7 @@
 #define OSTLS_B3_SERVERNAME "google.com"
 
 /*
- * Stage D library-call target. Same host MacSSLTest has been
+ * Stage D library-call target. Same host MacTLSTest has been
  * exercising end-to-end since Stage B4 -- google.com:443 over the
  * embedded GTS Root R4 trust anchor.
  */
@@ -326,9 +326,9 @@ show_result_and_wait(const char *title_c,
     }
     SetPortWindowPort(win);
 
-    /* Pump events until quit. Drawing happens on every updateEvt so
-     * the window stays correct if it's covered and uncovered. */
+    /* Pump events until quit. */
     while (!done) {
+        OSTLS_CollectEntropy();
         WaitNextEvent(everyEvent, &ev, 30, NULL);
         switch (ev.what) {
         case mouseDown:
@@ -415,12 +415,12 @@ main(void)
 
     /*
      * Bring up the file-backed logger first so every probe result
-     * is captured on disk in MacSSLTest.log on the Desktop. The log
+     * is captured on disk in MacTLSTest.log on the Desktop. The log
      * is the durable record we read back over scp; the result window
      * is just the live UI.
      */
     (void)OSTLS_LogInit();
-    OSTLS_LogLine("==== MacSSLTest run ====");
+    OSTLS_LogLine("==== MacTLSTest run ====");
 
     b1_msg[0] = '\0';
 
@@ -435,7 +435,7 @@ main(void)
                    (int)a5_result,
                    (a5_result == noErr) ? "OK" : smoke_label(a5_result));
     if (a5_result != noErr) {
-        sprintf(title_buf, "MacSSLTest -- mul64 probe FAILED");
+        sprintf(title_buf, "MacTLSTest -- mul64 probe FAILED");
         sprintf(line1_buf, "Stage A.5 mul64 FAILED (code %d)",
                 (int)a5_result);
         sprintf(line2_buf, "Gate: %s", smoke_label(a5_result));
@@ -456,7 +456,7 @@ main(void)
                    (a_result == noErr) ? "OK (engine reports SENDREC)"
                                        : smoke_label(a_result));
     if (a_result != noErr) {
-        sprintf(title_buf, "MacSSLTest -- Stage A smoke FAILED");
+        sprintf(title_buf, "MacTLSTest -- Stage A smoke FAILED");
         sprintf(line1_buf, "Stage A smoke FAILED (code %d)",
                 (int)a_result);
         sprintf(line2_buf, "Gate: %s", smoke_label(a_result));
@@ -478,7 +478,7 @@ main(void)
                    (long)ot_init_status,
                    (ot_init_status == noErr) ? " OK" : " FAIL");
     if (ot_init_status != noErr) {
-        sprintf(title_buf, "MacSSLTest -- OT init FAILED");
+        sprintf(title_buf, "MacTLSTest -- OT init FAILED");
         sprintf(line1_buf,
                 "InitOpenTransportInContext FAILED (ot_err=%ld)",
                 (long)ot_init_status);
@@ -496,7 +496,7 @@ main(void)
                    (int)b1_result, b1_msg);
 
     if (b1_result != kOSTLSB1_OK) {
-        sprintf(title_buf, "MacSSLTest -- Stage B1 FAILED");
+        sprintf(title_buf, "MacTLSTest -- Stage B1 FAILED");
         sprintf(line1_buf, "Stage B1 FAILED (code %d): %.140s",
                 (int)b1_result, b1_msg);
         sprintf(line2_buf,
@@ -527,7 +527,7 @@ main(void)
                        (int)b2_result, b2_msg);
 
         if (b2_result != kOSTLSB2_OK) {
-            sprintf(title_buf, "MacSSLTest -- Stage B2 FAILED");
+            sprintf(title_buf, "MacTLSTest -- Stage B2 FAILED");
             sprintf(line1_buf, "Stage B2 FAILED (code %d): %.140s",
                 (int)b2_result, b2_msg);
             sprintf(line2_buf,
@@ -560,7 +560,7 @@ main(void)
                        (int)b3_result, b3_msg);
 
         if (b3_result != kOSTLSB3_OK) {
-            sprintf(title_buf, "MacSSLTest -- Stage B3 FAILED");
+            sprintf(title_buf, "MacTLSTest -- Stage B3 FAILED");
             sprintf(line1_buf, "Stage B3 FAILED (code %d): %.140s",
                 (int)b3_result, b3_msg);
             sprintf(line2_buf,
@@ -594,7 +594,7 @@ main(void)
                        (int)d1_result, d1_msg);
 
         if (d1_result != kOSTLSD1_OK) {
-            sprintf(title_buf, "MacSSLTest -- Stage D1 FAILED");
+            sprintf(title_buf, "MacTLSTest -- Stage D1 FAILED");
             sprintf(line1_buf, "Stage D1 FAILED (code %d): %.140s",
                 (int)d1_result, d1_msg);
             sprintf(line2_buf, "Gate: %s (target=%s)",
@@ -610,7 +610,7 @@ main(void)
     }
 
     /*
-     * Stage D: exercise the macSSL v0.1 PUBLIC BLOCKING API.
+     * Stage D: exercise the macTLS v0.1 PUBLIC BLOCKING API.
      *
      * OSTLS_Fetch(host, port, server_name, path, out_buf, out_cap,
      *             out_len, out_msg, out_msg_len)
@@ -694,11 +694,11 @@ main(void)
             /* Don't emit "ALL STAGES OK" yet -- Stage D2 still to
              * run. The line2 / title are placeholders that Stage D2
              * will overwrite on its own success path. */
-            sprintf(title_buf, "MacSSLTest -- D OK (blocking lib)");
+            sprintf(title_buf, "MacTLSTest -- D OK (blocking lib)");
             sprintf(line1_buf, "OSTLS_Fetch %s", d_msg);
             sprintf(line2_buf, "Resp: %.140s", short_resp);
         } else {
-            sprintf(title_buf, "MacSSLTest -- Stage D FAILED");
+            sprintf(title_buf, "MacTLSTest -- Stage D FAILED");
             sprintf(line1_buf, "OSTLS_Fetch FAILED (code %d): %.140s",
                 (int)d_result, d_msg);
             sprintf(line2_buf,
@@ -716,7 +716,7 @@ main(void)
     }
 
     /*
-     * Stage D2: exercise the macSSL v0.2 ASYNC PUBLIC API directly.
+     * Stage D2: exercise the macTLS v0.2 ASYNC PUBLIC API directly.
      *
      * Drives OSTLSConnection through its lifecycle:
      *   OSTLS_New + OSTLS_Start
@@ -777,7 +777,7 @@ main(void)
         sprintf(d2_request,
             "GET %s HTTP/1.0\r\n"
             "Host: %s\r\n"
-            "User-Agent: macSSL/0.2\r\n"
+            "User-Agent: macTLS/0.2\r\n"
             "Connection: close\r\n"
             "\r\n",
             OSTLS_D2_PATH, OSTLS_D2_SERVERNAME);
@@ -840,13 +840,11 @@ main(void)
                     (unsigned long)diag.ot_recv_nodata);
             }
 
-            /* Yield so Carbon's OT deferred tasks get CPU time --
-             * without this, OTSnd queues the request but the OT
-             * stack never actually transmits it, and OTRcv never
-             * sees the reply. The library's design assumes the
-             * caller runs a WaitNextEvent loop between Pumps. */
+            /* Yield so Carbon's OT deferred tasks get CPU time.
+             * Also collect entropy while we wait. */
             {
                 EventRecord nullev;
+                OSTLS_CollectEntropy();
                 WaitNextEvent(everyEvent, &nullev, 1, NULL);
             }
 
@@ -953,7 +951,7 @@ main(void)
                 (unsigned long)total_read,
                 (unsigned long)chunk_count);
 
-        sprintf(title_buf, "MacSSLTest -- A..D2 OK (async)");
+        sprintf(title_buf, "MacTLSTest -- A..D2 OK (async)");
         sprintf(line1_buf, "%.140s", d2_msg);
         sprintf(line2_buf,
                 "D blocking OK; D2 async OK; Pump bounded.");
@@ -962,17 +960,20 @@ main(void)
 
         goto d2_done;
 
-    d2_failed:
-        sprintf(title_buf, "MacSSLTest -- Stage D2 FAILED");
-        sprintf(line1_buf, "OSTLS_Async FAILED (code %d): %.140s",
-            (int)d2_err, d2_msg);
+    d2_failed: {
+        OSTLSDiagnostics diag;
+        OSTLS_GetDiagnostics(conn, &diag);
+        sprintf(title_buf, "MacTLSTest -- Stage D2 FAILED");
+        sprintf(line1_buf, "OSTLS_Async FAILED (code %d, ot %ld, br %d)",
+            (int)d2_err, (long)diag.ot_err, (int)diag.br_err);
         sprintf(line2_buf,
             "Gate: %s (target=%s:%u)",
             smoke_label(d2_err),
             OSTLS_D2_HOST, (unsigned)OSTLS_D2_PORT);
         OSTLS_LogBlank();
-        OSTLS_LogLinef("==== Stage D2 FAILED (code=%d) ====",
-                       (int)d2_err);
+        OSTLS_LogLinef("==== Stage D2 FAILED (code=%d, ot=%ld, br=%d) ====",
+                       (int)d2_err, (long)diag.ot_err, (int)diag.br_err);
+    }
     d2_done: ;
     }
 

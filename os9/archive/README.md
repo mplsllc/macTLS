@@ -1,7 +1,7 @@
 # os9/archive/ — historical references, not in the build
 
-Source files in this folder are **not part of the MacSSLTest project
-target** and should not be added to MacSSLTest.mcp. They are kept
+Source files in this folder are **not part of the MacTLSTest project
+target** and should not be added to MacTLSTest.mcp. They are kept
 under version control because the git history of how they evolved is
 useful negative reference material, and because each carries a
 documented finding about classic Mac OS 9 that future contributors
@@ -11,7 +11,7 @@ should not have to re-discover.
 
 ### `ostls_c1_listener_carbon_cfm_abandoned.{h,c}`
 
-Stage C1 — the local TCP listener for the never-shipped "macSSL Proxy"
+Stage C1 — the local TCP listener for the never-shipped "macTLS Proxy"
 architecture. **DO NOT re-enable this code in the build unless
 targeting a non-Carbon CFM build (MPW / pre-Carbon OT) or a different
 process model.**
@@ -24,7 +24,7 @@ qlen / sync vs async / protocol stack returns `kOTBadAddressErr (-3150)`.
 
 Full investigation report: [docs/carbon-ot-passive-bind-finding.md](../../docs/carbon-ot-passive-bind-finding.md).
 
-If a future macSSL fork ever targets:
+If a future macTLS fork ever targets:
 
 - MPW C with the non-InContext OT API (e.g. an MPW shell tool / inetd
   style daemon), OR

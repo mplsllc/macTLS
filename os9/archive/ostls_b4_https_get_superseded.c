@@ -215,7 +215,7 @@ OSTLS_B4_HTTPS_Get_Probe(const char *target_host_port,
     sprintf(request_line,
         "GET %.80s HTTP/1.0\r\n"
         "Host: %.80s\r\n"
-        "User-Agent: MacSSLTest/0.1\r\n"
+        "User-Agent: MacTLSTest/0.1\r\n"
         "Connection: close\r\n"
         "\r\n",
         request_path, server_name);

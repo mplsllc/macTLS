@@ -1,8 +1,8 @@
 /*
  * ostls_log.h
  *
- * File-backed logger for MacSSLTest. Writes one CR-terminated line per
- * call to "MacSSLTest.log" on the Desktop. After each line, the file
+ * File-backed logger for MacTLSTest. Writes one CR-terminated line per
+ * call to "MacTLSTest.log" on the Desktop. After each line, the file
  * mark is updated and the volume is flushed so a crash or hang leaves
  * the latest entry on disk.
  *
@@ -23,11 +23,11 @@
  *   %c    char
  *   %%    literal '%'
  *
- * On the OS 9 side after a MacSSLTest run, the log can be pulled
+ * On the OS 9 side after a MacTLSTest run, the log can be pulled
  * back to Linux via the existing scp tunnel:
  *
  *   scp -P 2222 -i ~/.ssh/macsurf_push \
- *       patrick@localhost:Desktop/MacSSLTest.log /tmp/
+ *       patrick@localhost:Desktop/MacTLSTest.log /tmp/
  */
 
 #ifndef OSTLS_LOG_H
@@ -46,7 +46,7 @@ typedef short OSErr;
 
 /*
  * Initialise (or re-initialise) the log. Creates / truncates
- * MacSSLTest.log on the Desktop. Returns noErr on success; on any
+ * MacTLSTest.log on the Desktop. Returns noErr on success; on any
  * file-manager failure the function is a no-op for the rest of the
  * run -- subsequent OSTLS_Log* calls become silent. The probe code
  * NEVER fails because the log can't be opened, so this lets the

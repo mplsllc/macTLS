@@ -1,4 +1,4 @@
-# macSSL library API
+# macTLS library API
 
 Two parallel public surfaces:
 
@@ -119,7 +119,7 @@ buffers into an internal 4 KB queue; partial writes are normal when
 the buffer is full and the caller should retry the remainder after
 `kOSTLSEventWritable` fires.
 
-See [`docs/macssl-v0.2-async-design.md`](macssl-v0.2-async-design.md)
+See [`docs/mactls-v0.2-async-design.md`](mactls-v0.2-async-design.md)
 for the full design rationale (state machine diagram, Pump step
 definition, lifecycle table, reentrancy contract).
 
@@ -154,7 +154,7 @@ definition, lifecycle table, reentrancy contract).
 
 BearSSL contexts (`br_ssl_client_context`, `br_x509_minimal_context`)
 and the bidirectional I/O buffer (`BR_SSL_BUFSIZE_BIDI` = 33 178 bytes)
-live in macSSL's BSS — caller doesn't see them. Per-fetch resident
+live in macTLS's BSS — caller doesn't see them. Per-fetch resident
 memory total is ~50 KB, comfortable within MacSurf's 16 MB Carbon
 partition.
 
@@ -262,7 +262,7 @@ int main(void)
 ```
 
 For the integration path into MacSurf specifically, see
-[macssl-integration-notes.md](macssl-integration-notes.md).
+[mactls-integration-notes.md](mactls-integration-notes.md).
 
 ## v0.3 roadmap (not yet shipped)
 

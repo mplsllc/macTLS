@@ -1,40 +1,24 @@
 /*
  * ostls_b3_anchors.h
  *
- * Stage B3 embedded X.509 trust anchors for MacSSLTest. Ten
- * well-known root CAs that cover Google (RSA + ECDSA chains),
- * Amazon, Let's Encrypt (RSA + ECDSA), DigiCert (RSA + ECDSA),
- * and Starfield Services. Set matches the prior-art project
- * Certainly (https://github.com/minorbug/certainly), which we
- * adopted after Stage B4 once the architectural pattern was
- * established:
+ * Stage B3 embedded X.509 trust anchors for MacTLSTest and MacSurf.
+ * Full Mozilla CCADB root bundle (121 anchors, 82 RSA + 39 EC).
  *
- *   TA0  Amazon Root CA 1                      RSA-2048   exp 2038-01-17
- *   TA1  DigiCert Global Root G2               RSA-2048   exp 2038-01-15
- *   TA2  GTS Root R1   (Google primary RSA)    RSA-4096   exp 2036-06-22
- *   TA3  GTS Root R4   (Google ECDSA, P-384)   EC P-384   exp 2036-06-22
- *   TA4  ISRG Root X1  (Let's Encrypt RSA)     RSA-4096   exp 2035-06-04
- *   TA5  ISRG Root X2  (Let's Encrypt ECDSA)   EC P-384   exp 2040-09-17
- *   TA6  GTS Root R2   (Google secondary RSA)  RSA-4096   exp 2036-06-22
- *   TA7  GTS Root R3   (Google ECDSA)          EC P-384   exp 2036-06-22
- *   TA8  DigiCert Global Root G3               EC P-384   exp 2038-01-15
- *   TA9  Starfield Services Root CA G2         RSA-2048   exp 2037-12-31
+ * Source: curl.se cacert.pem snapshot, converted from the Mozilla NSS
+ * source via BearSSL's `brssl ta` tool, with the C99 designated
+ * union initialisers rewritten as a runtime-init loop to satisfy CW8
+ * C89. Regenerated via macTLS/tools/regenerate_anchors.sh.
  *
- * Bytes were extracted from public PEMs via BearSSL's `brssl ta` tool
- * (built from the same vendored 7bea48e5 source tree) on 2026-05-19.
- *
- * The trust_anchor C-source emitted by brssl uses C99 designated
- * union initialisers (`.rsa = { ... }` / `.ec = { ... }`) which CW8
- * C89 will not accept. To keep the byte arrays static const while
- * still landing the EC anchor cleanly, we initialise the
- * br_x509_trust_anchor array at runtime via OSTLS_B3_GetAnchors.
+ * Coverage notes: includes all major CAs trusted by Mozilla Firefox
+ * and downstream consumers (Cloudflare via Sectigo/USERTrust, Google
+ * via GTS R1-R4, AWS via Amazon Root, Microsoft, Apple, IdenTrust /
+ * Let's Encrypt, GlobalSign, GoDaddy, Buypass, QuoVadis, etc.).
  *
  * Rotation: BearSSL only consults the ROOT anchor by Distinguished
  * Name match against the chain the server presents. As long as the
- * server's chain still terminates in one of these five roots, B3
- * keeps validating. When a root is decommissioned (typically a year
- * or more of advance notice in the CA/B Forum) we rebuild this file
- * from a fresh brssl ta run.
+ * server's chain terminates in one of these roots, validation
+ * succeeds. When a root is decommissioned (typically a year or more
+ * of advance notice in the CA/B Forum) rerun the regeneration script.
  */
 
 #ifndef OSTLS_B3_ANCHORS_H
@@ -49,7 +33,7 @@
  */
 #include "bearssl_x509.h"
 
-#define OSTLS_B3_NUM_ANCHORS  10
+#define OSTLS_B3_NUM_ANCHORS  121
 
 /*
  * Return a pointer to the populated, ready-to-use trust-anchor

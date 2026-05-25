@@ -2,13 +2,13 @@
  * ostls_cw8_prefix.h
  *
  * CW8 / CodeWarrior 8 PPC compatibility prefix for the vendored BearSSL
- * source tree at macSSL/bearssl/.
+ * source tree at macTLS/bearssl/.
  *
  * This file is consumed by every translation unit compiling BearSSL .c
- * files under any CW8 project that links macSSL. It must be included
+ * files under any CW8 project that links macTLS. It must be included
  * before any BearSSL header (in practice: set it as the project-level
  * prefix file, or include it from a project prefix like
- * macssltest_prefix.h or macsurf_prefix.h).
+ * mactlstest_prefix.h or macsurf_prefix.h).
  *
  * Two roles:
  *
@@ -44,10 +44,10 @@
  * Override with a macro that returns a zero Point — mouse position
  * contributes nothing to Stage A's intentionally-insecure stub.
  */
-#ifndef MACSSL_LMGetMouse_neutralised
-#define MACSSL_LMGetMouse_neutralised
-static Point macssl_zero_pt_; /* zero-initialized at file scope */
-#define LMGetMouse() macssl_zero_pt_
+#ifndef MACTLS_LMGetMouse_neutralised
+#define MACTLS_LMGetMouse_neutralised
+static Point mactls_zero_pt_; /* zero-initialized at file scope */
+#define LMGetMouse() mactls_zero_pt_
 #endif
 
 /* ----------------------------------------------------------------- */

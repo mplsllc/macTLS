@@ -1342,7 +1342,7 @@ br_ssl_engine_compute_master(br_ssl_engine_context *cc,
 	br_tls_prf_impl iprf;
 	br_tls_prf_seed_chunk seed[2];
 
-	/* macSSL CW8 C89 patch: split aggregate initializer with non-
+	/* macTLS CW8 C89 patch: split aggregate initializer with non-
 	 * constant values into explicit member assignments. Strict C89
 	 * (which CW8 enforces) rejects member references via a pointer
 	 * deref in an automatic-storage aggregate initializer. */
@@ -1366,7 +1366,7 @@ compute_key_block(br_ssl_engine_context *cc, int prf_id,
 	br_tls_prf_impl iprf;
 	br_tls_prf_seed_chunk seed[2];
 
-	/* macSSL CW8 C89 patch: see br_ssl_engine_compute_master() above. */
+	/* macTLS CW8 C89 patch: see br_ssl_engine_compute_master() above. */
 	seed[0].data = cc->server_random;
 	seed[0].len = sizeof cc->server_random;
 	seed[1].data = cc->client_random;

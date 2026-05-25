@@ -69,7 +69,7 @@ OSTLS_SmokeTest(void)
      * Step 2: Inject the Stage A insecure entropy. Must happen before
      * br_ssl_client_reset() or that call will fail with BR_ERR_NO_RANDOM.
      */
-    entropy_err = OSTLS_InjectStageAEntropy(&gSmokeClient.eng);
+    entropy_err = OSTLS_InjectEntropy(&gSmokeClient.eng);
     if (entropy_err != 0) {
         return (OSErr)kOSTLSSmokeEntropyInjectFailed;
     }

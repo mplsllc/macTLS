@@ -1,9 +1,9 @@
 /*
- * ostls_fetch.h -- macSSL public library API
+ * ostls_fetch.h -- macTLS public library API
  *
  * Single-shot validated HTTPS GET for classic Mac OS 9 / PowerPC,
  * built on BearSSL over Open Transport. This is the stable surface
- * macSSL exposes to callers (MacSurf, future tools); the
+ * macTLS exposes to callers (MacSurf, future tools); the
  * Stage A-B internals (entropy, B1-B4 probes) are no longer the
  * public face of the project.
  *
@@ -11,7 +11,7 @@
  * categorically rejects passive bind to caller-chosen addresses
  * (see docs/carbon-ot-passive-bind-finding.md). The original
  * "local-proxy-on-port-8765" design is therefore impossible on
- * this platform. macSSL now ships as a library a host app
+ * this platform. macTLS now ships as a library a host app
  * links directly -- no listener, no port, no Carbon CFM
  * passive-bind problem.
  *
@@ -99,7 +99,7 @@ enum {
  *   - Sends:
  *       GET <path> HTTP/1.0
  *       Host: <server_name>
- *       User-Agent: macSSL/0.1
+ *       User-Agent: macTLS/0.1
  *       Connection: close
  *   - Captures up to out_cap bytes of the decrypted response into
  *     out_buf. Stops at either out_cap or peer close.

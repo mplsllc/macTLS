@@ -1,14 +1,14 @@
-# macSSL → MacSurf Integration Notes (Stage B5)
+# macTLS → MacSurf Integration Notes (Stage B5)
 
 Status: text-only design doc, no code wiring yet.
 
-This document describes how the verified MacSSLTest stack (BearSSL +
+This document describes how the verified MacTLSTest stack (BearSSL +
 Open Transport + embedded trust anchors + OS 9 clock conversion)
-becomes a usable HTTPS transport in MacSurf. The MacSSLTest binary
+becomes a usable HTTPS transport in MacSurf. The MacTLSTest binary
 remains useful as a standalone diagnostic; the integration is
 additive.
 
-## What MacSSLTest proved
+## What MacTLSTest proved
 
 Verified on real Mac OS 9.1 / G3 hardware at 2026-05-19 (see git
 history `fixes7..fixes12`):
@@ -59,7 +59,7 @@ struct macos9_https_ctx {
 };
 ```
 
-### 2. Three callable units to lift from macSSL
+### 2. Three callable units to lift from macTLS
 
 Treat these as a stable API surface; they're already isolated by
 file:
@@ -136,14 +136,14 @@ budget. No partition bump required.
 
 ### 6. Cooperative yielding
 
-MacSSLTest's probes use synchronous + blocking OT throughout because
+MacTLSTest's probes use synchronous + blocking OT throughout because
 the binary is single-threaded and has no UI events to service mid-
 handshake. MacSurf's fetcher is single-threaded too but the event
 loop is alive — so the handshake loop MUST yield. Options:
 
 - **Notifier + `YieldToAnyThread`** on `kOTSyncIdleEvent`. MacSurf
   already uses this pattern in `macos9_http_fetcher.c` — drop in the
-  same notifier shape. The `<Threads.h>` include issue MacSSLTest
+  same notifier shape. The `<Threads.h>` include issue MacTLSTest
   worked around (see `fixes11` notes) is already handled in the
   MacSurf prefix.
 - **Switch to non-blocking** + `OTLook` poll. More code, finer-
@@ -163,7 +163,7 @@ HTTPS via Go's `crypto/tls` and returns plaintext.
 
 - Sites whose JavaScript needs server-side rendering (the render-and-
   flatten pipeline).
-- Sites with cert chains that don't terminate in one of macSSL's five
+- Sites with cert chains that don't terminate in one of macTLS's five
   embedded roots (until a CA bundle ships).
 - Fallback when entropy on the client is provably weak (no mouse
   movement yet during boot, etc.).
@@ -195,7 +195,7 @@ integration needs a small translation table at the boundary:
 The clock-before-2000 dialog is the most important user-visible
 surface — PRAM-battery-dead Macs are common and the user has zero
 chance of debugging "expired cert" if the underlying cause is a
-1904-era system clock. macSSL's `kOSTLSB3_ClockBefore2000` /
+1904-era system clock. macTLS's `kOSTLSB3_ClockBefore2000` /
 `kOSTLSB4_ClockBefore2000` distinct codes carry this through; the
 integration must keep them distinct, not collapse them into a
 generic "TLS failed".
@@ -203,7 +203,7 @@ generic "TLS failed".
 ### 9. Known limitations of the v1 integration
 
 - **No HTTP/2.** BearSSL is TLS-only. Negotiated protocol is HTTP/1.x.
-- **No chunked decoder in macSSL.** MacSurf's HTTP fetcher already has
+- **No chunked decoder in macTLS.** MacSurf's HTTP fetcher already has
   `process_chunked_bytes` (see `macos9_http_fetcher.c`). Lift that
   into the HTTPS fetcher or share it.
 - **No session resumption.** Every fetch does a fresh handshake. With
@@ -215,9 +215,9 @@ generic "TLS failed".
 
 ### 10. Testing harness
 
-MacSSLTest is the canonical regression test. Any change to macSSL
+MacTLSTest is the canonical regression test. Any change to macTLS
 should rerun all five stages (A.5, A, B1, B2, B3, B4) against the
-same targets. The file-backed log (`MacSSLTest.log` on Desktop,
+same targets. The file-backed log (`MacTLSTest.log` on Desktop,
 fixes11) gives a plain-text record per run; the harness can diff
 log files between runs to catch regressions.
 
@@ -226,17 +226,17 @@ log files between runs to catch regressions.
 - The actual `macos9_https_fetcher.c` source. This document is the
   scope; the code follows in a later milestone tracked in MacSurf's
   CLAUDE.md.
-- Production entropy. Tracked separately in the macSSL repo.
+- Production entropy. Tracked separately in the macTLS repo.
 - A larger CA bundle. Tracked separately.
 
 ## Followups
 
 | Item                                        | Where               |
 |---------------------------------------------|---------------------|
-| Production entropy (mouse/key/notifier)     | macSSL os9/ostls_entropy.c |
+| Production entropy (mouse/key/notifier)     | macTLS os9/ostls_entropy.c |
 | macos9_https_fetcher.c implementation       | MacSurf frontend    |
 | BearSSL error → NSERROR translation table   | MacSurf frontend    |
 | Clock-wrong dialog                          | MacSurf UI          |
-| Session resumption                          | macSSL (v2)         |
-| Larger CA bundle                            | macSSL              |
+| Session resumption                          | macTLS (v2)         |
+| Larger CA bundle                            | macTLS              |
 | chunked decoder shared with HTTP fetcher    | MacSurf frontend    |

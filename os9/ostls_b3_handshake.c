@@ -217,7 +217,7 @@ OSTLS_B3_Validated_Probe(const char *target_host_port,
     br_ssl_client_init_full(&gB3Client, &gB3X509, anchors, anchors_count);
     br_x509_minimal_set_time(&gB3X509, br_days, br_seconds);
 
-    entropy_err = OSTLS_InjectStageAEntropy(&gB3Client.eng);
+    entropy_err = OSTLS_InjectEntropy(&gB3Client.eng);
     if (entropy_err != 0) {
         b3_status(out_msg, out_msg_len, "B3: entropy inject FAIL", 0);
         OTSndOrderlyDisconnect(ep);
