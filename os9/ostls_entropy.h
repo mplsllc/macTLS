@@ -47,4 +47,21 @@ int OSTLS_InjectEntropy(br_ssl_engine_context *eng);
  */
 void OSTLS_CollectEntropy(void);
 
+/*
+ * Cold-start seed persistence (Stage C).
+ *
+ * OSTLS_LoadSeed reads the persisted seed file (Preferences folder) and
+ * folds it into the pool. It is called automatically the first time the
+ * pool is used, so cold-start benefit needs no host cooperation; it is
+ * also exported for a host that wants to load explicitly at startup.
+ *
+ * OSTLS_SaveSeed extracts a fresh, domain-separated 32-byte seed and
+ * writes it back. It fires automatically once per process on the first
+ * entropy injection. A host SHOULD also call it at a clean shutdown to
+ * persist the full session's accumulated entropy. The seed file is only
+ * ever mixed in alongside live samples -- never trusted alone.
+ */
+void OSTLS_LoadSeed(void);
+void OSTLS_SaveSeed(void);
+
 #endif /* OSTLS_ENTROPY_H */
