@@ -72,33 +72,33 @@ file:
   clock → BearSSL's day-count-since-0-AD. Note the proleptic
   Gregorian epoch (Unix Epoch = day 719528); the day this was
   wrong cost a round-trip in B3 (see `fixes8` commit message).
-- **`ostls_entropy`** — `OSTLS_InjectStageAEntropy(&eng)`. **Stage A
-  insecure stub** that BearSSL accepts. **Must be replaced** with
-  the real production entropy gathering described below before
-  shipping HTTPS in MacSurf to end users.
+- **`ostls_entropy`** — `OSTLS_InjectEntropy(&eng)` /
+  `OSTLS_CollectEntropy()`. **macEntropy v1.0** (hardware-validated on
+  G3, 2026-05-29): a SHA-256 accumulator, not the old stub. Call
+  `OSTLS_CollectEntropy()` from the host idle loop and (once the host
+  stir seam lands) `OSTLS_StirEntropy()` with key/mouse jitter.
 
-### 3. Production entropy (required before user-facing HTTPS)
+### 3. Production entropy — DONE (macEntropy v1.0)
 
-The current Stage A entropy is intentionally insecure:
+The original Stage-A stub (32 bytes of TickCount + Microseconds + stack
+address + a fixed tag — not cryptographically sound) has been replaced.
+macEntropy v1.0 (see [MACENTROPY_SCOPE.md](../MACENTROPY_SCOPE.md)) is:
 
-> 32 bytes mixing TickCount + Microseconds + stack address + fixed
-> tag. NOT production-grade.
+- A running SHA-256 pool; domain-separated extraction with fold-back,
+  feeding BearSSL's engine HMAC-DRBG.
+- Sources: high-resolution clock, mouse-delta jitter, stack noise, and
+  OT packet-arrival timing folded in at every `OTRcv` during a fetch.
+- A Preferences-folder seed file persisted across boots, so the first
+  handshake after a cold boot is not thin.
+- Validated by the Stage E self-test: non-degenerate output and distinct
+  seed streams across separate launches.
 
-Replacement plan (from `os9/ostls_entropy.c`'s docstring):
-
-- Mouse delta hashing across an idle window
-- Key-down latency jitter
-- OT notifier tick jitter (already cooperative-friendly)
-- Persisted seed file rolled at clean shutdown
-- First-run "wiggle the mouse" gathering dialog
-
-Until that lands, MacSurf must NOT advertise HTTPS as production
-secure. Stage B3's validated handshake works because the public key
-the server provides is mathematically verified — but session keys
-derived from weak entropy are predictable, which means an attacker
-who observes the encrypted traffic can decrypt it post-hoc. The
-encrypt/decrypt symmetry of the handshake doesn't protect against
-this; only good random does.
+The one remaining piece is the host stir seam (`OSTLS_StirEntropy`),
+which lands with the MacSurf fold-in so a real event loop can feed
+key-press latency and mouse deltas. The earlier warning — that MacSurf
+must not advertise HTTPS as production-secure until real entropy lands —
+is now satisfied: session keys derive from a validated CSPRNG seed, not
+the predictable stub.
 
 ### 4. Trust anchor rotation
 

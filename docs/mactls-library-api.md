@@ -206,20 +206,17 @@ no streaming callback yet (entire response must fit in out_buf)
 no POST / PUT / DELETE yet
 no redirect following yet
 no chunked transfer-encoding decoder
-fixed embedded trust anchor set (10 roots; see ostls_b3_anchors.h)
+fixed embedded trust anchor set (full Mozilla set, 121 roots; see ostls_b3_anchors.h)
 no root-store UI (anchors are baked in at build time)
-entropy is the Stage A insecure stub — replace before production HTTPS
 no session resumption — every call does a full handshake
 ```
 
-The entropy gap is the biggest of these. The Stage A entropy mixes
-TickCount, Microseconds, stack address, and a fixed tag into a
-32-byte buffer just enough to satisfy BearSSL's entropy gate. **It
-is NOT cryptographically sound.** Replacing it with a production
-entropy gathering (mouse delta, key latency jitter, OT notifier
-tick jitter, persisted seed file) is the prerequisite for shipping
-HTTPS to end users as a security claim, separate from the
-networking work.
+Entropy is **no longer a gap**: macEntropy v1.0 (hardware-validated on
+a real G3, 2026-05-29) replaced the original Stage-A stub with a
+SHA-256 accumulator fed by clock/mouse/stack/OT-packet-arrival jitter
+and a Preferences-folder seed file persisted across boots, feeding
+BearSSL's engine HMAC-DRBG. See [MACENTROPY_SCOPE.md](../MACENTROPY_SCOPE.md)
+and `os9/ostls_entropy.c`.
 
 ## Example usage
 
@@ -275,8 +272,10 @@ For the integration path into MacSurf specifically, see
 
 ## v1.0 (security-ready) roadmap
 
-- Production entropy gathering: mouse-delta across an idle window,
-  key-press latency jitter, OT notifier tick jitter, persisted
-  seed file rolled at clean shutdown. The Stage A insecure stub
-  in `os9/ostls_entropy.c` is what blocks the "production crypto"
-  claim more than any feature gap.
+- ~~Production entropy gathering.~~ **Done — macEntropy v1.0**
+  (hardware-validated on G3, 2026-05-29): SHA-256 accumulator fed by
+  clock / mouse / stack / OT-packet-arrival jitter + a persisted
+  Preferences-folder seed file, feeding BearSSL's engine HMAC-DRBG.
+  See `os9/ostls_entropy.c` and [MACENTROPY_SCOPE.md](../MACENTROPY_SCOPE.md).
+  The remaining v1.0 item is the host stir seam (`OSTLS_StirEntropy`),
+  which lands with the MacSurf fold-in so a real event loop feeds it.

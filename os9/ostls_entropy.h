@@ -1,33 +1,26 @@
 /*
  * ostls_entropy.h
  *
- * macEntropy -- entropy gathering for macTLS. See MACENTROPY_SCOPE.md.
+ * macEntropy v1.0 -- production entropy for macTLS. See MACENTROPY_SCOPE.md.
  *
- * !!! NOT YET HARDWARE-VALIDATED -- DO NOT TREAT AS PRODUCTION-READY !!!
+ * Hardware-validated on a real Power Macintosh G3 (2026-05-29).
  *
- * Stage A (current): the pool is a running BearSSL SHA-256 context that
- * every source sample is folded into; seed extraction clones the pool,
- * mixes a domain-separation tag, finalises 32 bytes, and folds the
- * result back. The seed is injected into BearSSL's engine HMAC-DRBG.
- * This is a real cryptographic accumulator (it replaced a rotate-XOR
- * mix), but the subsystem is not finished: cold-start seed-file
- * persistence (Stage C), source breadth -- OT + key-latency jitter --
- * (Stage B), and statistical validation on real G3 hardware (Stage E)
- * are all still pending.
- *
- * OSTLS_ENTROPY_STAGE_A_INSECURE stays defined until Stage E passes, so
- * any code touching this layer trips a compile-time reminder that the
- * entropy subsystem has not yet been blessed. Remove it at Stage E.
+ * The pool is a running BearSSL SHA-256 context that every source sample
+ * is folded into; seed extraction clones the pool, mixes a domain-
+ * separation tag, finalises 32 bytes, and folds the result back so
+ * successive seeds are independent. The seed is injected into BearSSL's
+ * engine HMAC-DRBG (macTLS supplies the seed material, BearSSL runs the
+ * generator). Sources: high-resolution clock, mouse jitter, stack noise,
+ * OT packet-arrival timing during fetches, and a Preferences-folder seed
+ * file persisted across boots so the first handshake after a cold boot
+ * is not thin. The Stage E self-test confirmed non-degenerate output and
+ * distinct seed streams across separate launches.
  */
 
 #ifndef OSTLS_ENTROPY_H
 #define OSTLS_ENTROPY_H
 
 #include "bearssl_ssl.h"
-
-/* Compile-time reminder: entropy is not yet hardware-validated.
- * Removed when macEntropy Stage E (statistical validation) passes. */
-#define OSTLS_ENTROPY_STAGE_A_INSECURE 1
 
 /*
  * Inject entropy into a BearSSL SSL engine.

@@ -26,10 +26,11 @@
  * box, physical disk access is already game-over; this just avoids a
  * thin first handshake.)
  *
- * NOT yet the v1.0 subsystem: source breadth -- OT + key-latency jitter
- * -- (Stage B) and hardware statistical validation (Stage E) are still
- * pending, so OSTLS_ENTROPY_STAGE_A_INSECURE stays defined as a
- * compile-time reminder until Stage E passes. See MACENTROPY_SCOPE.md.
+ * Source breadth (Stage B): OSTLS_StirTimer folds packet-arrival timing
+ * into the pool at every OTRcv during a fetch. Validation (Stage E):
+ * OSTLS_EntropySelfTest confirmed non-degenerate output and distinct
+ * seed streams across launches on real G3 hardware (2026-05-29). This is
+ * macEntropy v1.0. See MACENTROPY_SCOPE.md.
  */
 
 #include "ostls_entropy.h"

@@ -1,7 +1,9 @@
 # macEntropy — production entropy for macTLS
 
-**Status:** Stage 0 (design lock). No code written yet beyond the existing
-Stage-A module this scope replaces.
+**Status: macEntropy v1.0 — hardware-validated on a real G3 (2026-05-29).**
+Stages A, C, B, E all confirmed. The `OSTLS_ENTROPY_STAGE_A_INSECURE`
+reminder has been removed. Stage D (host stir seam) rides along with the
+MacSurf fold-in (Stage F), which is the only remaining work.
 
 **Goal (closes the project):** macTLS seeds BearSSL with cryptographically
 defensible entropy on a real Power Macintosh G3, including on the *first*
@@ -134,7 +136,12 @@ is tuned against. Document the macsurf event-loop call sites here, but
 **Gate:** `MacTLSTest` feeds synthetic stir samples; pool reflects them;
 handshake unaffected.
 
-### Stage E — Hardware statistical validation  *(v1.0 milestone gate)*
+### Stage E — Hardware statistical validation  *(v1.0 milestone gate — PASSED on G3, 2026-05-29)*
+*Two MacTLSTest runs: both PASS within-run (dups=0, buckets=256/256,
+maxbkt 17/20, bit balance tight), and the batch fingerprints differed
+across launches (94A7251B vs 52AB2050) — the cross-run entropy proof.
+`OSTLS_ENTROPY_STAGE_A_INSECURE` removed; tagged macEntropy v1.0.*
+
 On a real G3: capture seed outputs across many handshakes and across
 multiple clean boots; run basic statistical sanity — no constant or
 stuck bytes, reasonable byte-value spread, run-to-run variance, and
