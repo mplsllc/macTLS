@@ -97,6 +97,13 @@ static OTResult OTLook(EndpointRef e){(void)e;return 0;}
 static OSStatus OTCloseProvider(EndpointRef e){(void)e;return noErr;}
 static long OTInitDNSAddress(DNSAddress *d,const char *s){(void)d;(void)s;return 0;}
 static void OTInitInetAddress(InetAddress *a, InetPort p, InetHost h){(void)a;(void)p;(void)h;}
+/* fixes252 — TCP_NODELAY option stubs for Retro68 syntax check */
+typedef struct { unsigned long len; unsigned long level; unsigned long name; unsigned long status; unsigned long value[1]; } TOption;
+typedef struct { TNetbuf opt; long flags; } TOptMgmt;
+#define INET_TCP 6
+#define TCP_NODELAY 1
+#define T_NEGOTIATE 0x0004
+static OSStatus OTOptionManagement(EndpointRef e, TOptMgmt *r, TOptMgmt *o){(void)e;(void)r;(void)o;return noErr;}
 static void OTMemzero(void *p,unsigned long n){memset(p,0,n);}
 static char *NewPtrClear(unsigned long n){return (char *)calloc(1, n);}
 static void DisposePtr(char *p){free(p);}
@@ -505,6 +512,97 @@ event_bump(OSTLSEvent *current, OSTLSEvent candidate)
  * Initialise BearSSL on this connection after the TCP connect has
  * completed. Once-per-connection setup.
  */
+/* ---------- TLS session cache (fixes254) ----------
+ *
+ * Session resumption (RFC 5246 §F.1.4). After a successful handshake,
+ * BearSSL exposes a br_ssl_session_parameters carrying the session ID,
+ * master secret, cipher suite, and version. If we present that to the
+ * server on a subsequent ClientHello and the server still has the
+ * session in its cache, the handshake is abbreviated: server skips the
+ * Certificate, ServerKeyExchange, and ServerHelloDone messages and
+ * jumps straight to ChangeCipherSpec + Finished. Saves ~700-1200 ms
+ * of CPU + network round-trips per resumption on a 233 MHz G3.
+ *
+ * Cache scope: session lifetime, in-RAM only. Disk persistence across
+ * launches would be a follow-on (need to serialise the params struct).
+ * Keyed by "host:port" so subdomains and explicit ports don't collide.
+ * FIFO eviction at 16 entries. Per-entry size is ~340 bytes; total
+ * cache budget is ~5.5 KB.
+ *
+ * Server support: most modern HTTPS servers (nginx, Cloudflare, Apache
+ * with mod_ssl session cache) support session ID resumption out of
+ * the box, typically with a 10-300 min cache lifetime. If a server
+ * doesn't recognize the session ID, it falls through to a full
+ * handshake — no harm done. */
+#define OSTLS_SESS_MAX 16
+#define OSTLS_SESS_KEY_LEN 280
+
+typedef struct {
+    char    key[OSTLS_SESS_KEY_LEN];
+    br_ssl_session_parameters params;
+} ostls_session_entry;
+
+static ostls_session_entry s_sess_cache[OSTLS_SESS_MAX];
+static int                 s_sess_cache_count = 0;
+
+static int
+sess_cache_find(const char *key)
+{
+    int i;
+    if (key == NULL || key[0] == '\0') return -1;
+    for (i = 0; i < s_sess_cache_count; i++) {
+        if (strcmp(s_sess_cache[i].key, key) == 0) return i;
+    }
+    return -1;
+}
+
+static int
+sess_cache_get(const char *key, br_ssl_session_parameters *out)
+{
+    int idx;
+    if (out == NULL) return 0;
+    idx = sess_cache_find(key);
+    if (idx < 0) return 0;
+    *out = s_sess_cache[idx].params;
+    return 1;
+}
+
+static void
+sess_cache_put(const char *key, const br_ssl_session_parameters *p)
+{
+    int idx;
+    int i;
+    if (key == NULL || key[0] == '\0' || p == NULL) return;
+    idx = sess_cache_find(key);
+    if (idx >= 0) {
+        s_sess_cache[idx].params = *p;
+        return;
+    }
+    if (s_sess_cache_count >= OSTLS_SESS_MAX) {
+        /* FIFO evict the oldest entry. */
+        for (i = 0; i < OSTLS_SESS_MAX - 1; i++) {
+            s_sess_cache[i] = s_sess_cache[i + 1];
+        }
+        s_sess_cache_count--;
+    }
+    strncpy(s_sess_cache[s_sess_cache_count].key, key,
+            sizeof s_sess_cache[0].key - 1);
+    s_sess_cache[s_sess_cache_count].key[
+        sizeof s_sess_cache[0].key - 1] = '\0';
+    s_sess_cache[s_sess_cache_count].params = *p;
+    s_sess_cache_count++;
+}
+
+/* Compose the "host:port" cache key into out (cap bytes). */
+static void
+sess_cache_make_key(const OSTLSConnection *conn, char *out, int cap)
+{
+    int n;
+    if (out == NULL || cap <= 0) return;
+    n = sprintf(out, "%s:%d", conn->host, (int)conn->port);
+    if (n < 0 || n >= cap) out[0] = '\0';
+}
+
 static OSTLSEvent
 ostls_setup_bearssl(OSTLSConnection *conn)
 {
@@ -539,6 +637,19 @@ ostls_setup_bearssl(OSTLSConnection *conn)
     br_ssl_engine_set_buffer(&conn->sc.eng,
                              conn->ssl_iobuf,
                              sizeof conn->ssl_iobuf, 1);
+
+    /* fixes254 — TLS session resumption. If we cached params from a
+     * prior successful handshake to this host:port, inject them now
+     * so the upcoming ClientHello carries the session ID. */
+    {
+        char key[OSTLS_SESS_KEY_LEN];
+        br_ssl_session_parameters cached;
+        sess_cache_make_key(conn, key, sizeof key);
+        if (sess_cache_get(key, &cached)) {
+            br_ssl_engine_set_session_parameters(
+                &conn->sc.eng, &cached);
+        }
+    }
 
     reset_ok = br_ssl_client_reset(&conn->sc, conn->server_name, 0);
     if (reset_ok == 0) {
@@ -664,6 +775,40 @@ pump_connect_step(OSTLSConnection *conn, UInt32 *steps_used)
         }
 
         conn->connect_phase = kConnectPhase_Done;
+
+        /* fixes252 — disable Nagle's algorithm via TCP_NODELAY. The
+         * interaction with TCP delayed-ACK can cost ~200 ms on a cold
+         * connection: handshake last message (client Finished) is
+         * small, server delays the ACK, Nagle holds back our HTTP
+         * request waiting for the unACKed handshake bytes. NODELAY
+         * means every TLS record we hand to OTSnd goes on the wire
+         * immediately. Pool-reused connections didn't suffer (no
+         * recent unACKed data), so the win is per cold connection.
+         * Best-effort: failure is non-fatal (Nagle stays on). */
+        {
+            TOption  opt;
+            TOptMgmt req;
+            TOptMgmt ret;
+
+            opt.len      = sizeof opt;
+            opt.level    = INET_TCP;
+            opt.name     = TCP_NODELAY;
+            opt.status   = 0;
+            opt.value[0] = 1;
+
+            req.opt.buf    = (UInt8 *)&opt;
+            req.opt.len    = sizeof opt;
+            req.opt.maxlen = sizeof opt;
+            req.flags      = T_NEGOTIATE;
+
+            ret.opt.buf    = (UInt8 *)&opt;
+            ret.opt.len    = 0;
+            ret.opt.maxlen = sizeof opt;
+            ret.flags      = 0;
+
+            (void)OTOptionManagement(conn->ep, &req, &ret);
+        }
+
         /* Transition to handshaking. */
         conn->state = kOSTLSStateHandshaking;
         {
@@ -963,6 +1108,15 @@ pump_bearssl_step(OSTLSConnection *conn, OSTLSEvent *best_event)
         sess = &conn->sc.eng.session;
         conn->cipher_suite =
             (UInt16)(sess->cipher_suite & 0xFFFFU);
+        /* fixes254 — cache the session parameters for resumption on
+         * the next connect to this host:port. Server-side support
+         * (modern nginx / Apache / Cloudflare) makes resumption a
+         * 1-RTT abbreviated handshake; saves ~700-1200 ms per repeat. */
+        {
+            char key[OSTLS_SESS_KEY_LEN];
+            sess_cache_make_key(conn, key, sizeof key);
+            sess_cache_put(key, sess);
+        }
         event_bump(best_event, kOSTLSEventHandshakeDone);
         return 1;
     }
