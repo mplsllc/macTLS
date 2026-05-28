@@ -1,24 +1,31 @@
 # macTLS
 
-> **⚠️ This repository is archived.** macTLS shipped in production as
-> part of [MacSurf](https://github.com/mplsllc/macsurf) on 2026-05-25
-> (the "first-light" milestone: native HTTPS on a real G3 iMac against
-> `mactrove.com`, proxy fully retired). All ongoing development happens
-> inside the MacSurf repo at `macsurf/macTLS/`. This standalone repo is
-> kept as a reference snapshot — the architecture, the BearSSL +
-> Open Transport bridge, the cooperative async API, the Carbon-OT
-> passive-bind finding — but **it is no longer updated separately**.
-> If you're building a Classic Mac OS application that needs HTTPS,
-> pull the macTLS source out of the MacSurf repo where it ships with
-> the full Mozilla CA bundle (121 anchors) and stays current.
+> **Active development.** macTLS reached its "first-light" milestone on
+> 2026-05-25 (native HTTPS on a real G3 iMac against `mactrove.com`,
+> proxy fully retired) shipping inside
+> [MacSurf](https://github.com/mplsllc/macsurf), and development has
+> since **resumed here**. This is the live macTLS repo — a standalone,
+> reusable TLS component for Classic Mac OS, not a frozen snapshot.
+>
+> **Compatibility policy: MacSurf is the top of the list.** macTLS is
+> built to drop into any Classic Mac OS application (a mail client, an
+> FTP/SSH client, anything needing a secure socket), but every default,
+> limit, and release gate is set by what MacSurf needs. The hard floors
+> are MacSurf's: **CW8 C89** (every change must compile clean under
+> CodeWarrior 8 in C89), a **16 MB Carbon partition** memory ceiling, a
+> **cooperative `Pump`-driven** integration model (no threads), and
+> **no external dependencies** beyond vendored BearSSL + the Toolbox.
+> Consumers pin macTLS as a submodule; the MacSurf submodule pointer
+> only advances to a commit after that commit is verified on real G3
+> hardware. That makes "MacSurf first" mechanical, not just intent.
 
 ---
 
 macTLS brings native HTTPS to classic Mac OS 9. It's a small C
 library that opens a TLS 1.2 connection from a PowerPC Mac
 application, validates the certificate chain against the embedded
-root CA bundle (10 in this snapshot; 121 in the MacSurf-shipped
-version), and returns the decrypted response bytes. Compiled under
+root CA bundle (the full Mozilla set, 121 anchors), and returns the
+decrypted response bytes. Compiled under
 CodeWarrior 8 Pro; verified end-to-end on a real Power Macintosh G3
 running Mac OS 9.1.
 
