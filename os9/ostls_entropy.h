@@ -64,4 +64,21 @@ void OSTLS_CollectEntropy(void);
 void OSTLS_LoadSeed(void);
 void OSTLS_SaveSeed(void);
 
+/*
+ * Source breadth + accounting (Stage B).
+ *
+ * OSTLS_StirTimer folds a fresh high-resolution timestamp (Microseconds
+ * + TickCount) plus a caller hint into the pool. macTLS calls it at each
+ * OTRcv that delivers bytes, so the unpredictable arrival timing of
+ * every network packet during a fetch becomes entropy -- a high-rate
+ * source that is genuinely jittery and needs no host cooperation. Safe
+ * to call frequently; it is pure computation plus two clock reads.
+ *
+ * OSTLS_EntropySampleCount returns the number of source samples folded
+ * into the pool so far -- a coarse accounting signal (not a true
+ * entropy estimate) for telling whether the pool has been fed.
+ */
+void OSTLS_StirTimer(unsigned long hint);
+unsigned long OSTLS_EntropySampleCount(void);
+
 #endif /* OSTLS_ENTROPY_H */

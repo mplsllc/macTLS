@@ -263,6 +263,33 @@ OSTLS_CollectEntropy(void)
     }
 }
 
+void
+OSTLS_StirTimer(unsigned long hint)
+{
+    UInt32 ticks;
+    UnsignedWide usec;
+
+#ifdef __MWERKS__
+    ticks = (UInt32)TickCount();
+    Microseconds(&usec);
+#else
+    ticks = 0;
+    usec.hi = 0; usec.lo = 0;
+#endif
+
+    /* The value of the clocks matters less than *when* this runs: called
+     * at packet-arrival time, the low bits capture network jitter. */
+    pool_update(&ticks, sizeof ticks);
+    pool_update(&usec, sizeof usec);
+    pool_update(&hint, sizeof hint);
+}
+
+unsigned long
+OSTLS_EntropySampleCount(void)
+{
+    return (unsigned long)g_sample_count;
+}
+
 int
 OSTLS_InjectEntropy(br_ssl_engine_context *eng)
 {
@@ -290,6 +317,7 @@ OSTLS_InjectEntropy(br_ssl_engine_context *eng)
     pool_update(&g_sample_count, sizeof g_sample_count);
 
     pool_extract(inject_tag, sizeof inject_tag, seed);
+    OSTLS_LogLinef("macEntropy: inject samples=%lu", (unsigned long)g_sample_count);
     br_ssl_engine_inject_entropy(eng, seed, sizeof seed);
 
     /* Roll the persisted seed once per process so the next cold boot

@@ -859,6 +859,9 @@ pump_ot_recv_into_bearssl(OSTLSConnection *conn)
         br_ssl_engine_recvrec_ack(&conn->sc.eng, (size_t)got);
         conn->nf_data_pending = false;  /* drained for now */
         conn->dbg_ot_recv_bytes += (UInt32)got;
+        /* macEntropy Stage B: fold packet-arrival timing into the pool.
+         * The moment bytes land off the wire is genuinely jittery. */
+        OSTLS_StirTimer((unsigned long)got);
         return 1;
     } else if (got == kOTNoDataErr) {
         if (conn->nf_ord_release && !conn->ord_consumed) {
