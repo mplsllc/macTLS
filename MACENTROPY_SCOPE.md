@@ -85,7 +85,7 @@ BearSSL's engine DRBG; no home-grown generator; seed-file + breadth +
 health as the v1.0 scope; `OSTLS_RandomBytes` deferred.
 **Gate:** doc published, no code. *(this commit)*
 
-### Stage A — Cryptographic accumulator
+### Stage A — Cryptographic accumulator  *(VERIFIED on G3, 2026-05-29)*
 Replace `entropy_mix`'s rotate-XOR with a `br_sha256`-based pool. Keep a
 persistent `br_sha256_context`; `update` it with each source sample; on
 inject, finalize a copy to produce the 32-byte seed, then fold that seed
@@ -95,7 +95,13 @@ keep their signatures.
 against a live host still succeeds on a real G3 (no regression vs the
 current weak mix).
 
-### Stage B — Source breadth + entropy accounting
+### Stage B — Source breadth + entropy accounting  *(VERIFIED on G3, 2026-05-29)*
+*OT packet-arrival jitter (OSTLS_StirTimer at OTRcv) + sample accounting
+shipped. Note: the stir fires on the async pump only; the synchronous
+v0.1 handshake/fetch paths get clock/stack/seed/counter entropy but no
+packet jitter. Async is the production (macsurf) path, so this is an
+accepted boundary; stirring the sync path is optional follow-up.*
+
 Add the sources macTLS can gather itself:
 - **OT packet-arrival jitter** — mix `Microseconds`/`TickCount` low bits
   at each `OTRcv` in the async pump (macTLS owns the endpoint; this is
@@ -108,7 +114,7 @@ Add the sources macTLS can gather itself:
 interval and across a fetch; handshake proceeds only past threshold
 (or logs a cold-start warning when below it).
 
-### Stage C — Seed-file persistence (the cold-start fix)
+### Stage C — Seed-file persistence (the cold-start fix)  *(VERIFIED on G3, 2026-05-29)*
 Read a seed file at first use (`FindFolder` → Preferences folder), mix
 its bytes into the pool — **never trust the file alone**, always combine
 with live samples. Rewrite the file periodically and at clean shutdown
