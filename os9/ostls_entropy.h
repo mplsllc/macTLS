@@ -75,6 +75,17 @@ void OSTLS_StirTimer(unsigned long hint);
 unsigned long OSTLS_EntropySampleCount(void);
 
 /*
+ * Host stir seam (Stage D). A host event loop calls this with whatever
+ * jittery bytes it has on hand -- typically an EventRecord (mouse
+ * location, event time in ticks, key code, message) -- to fold them into
+ * the pool alongside a fresh timestamp. This is how key-press latency and
+ * mouse-delta entropy reach macTLS. Self-gathered sources (clock, OT
+ * packet-arrival jitter, the seed file) work without it; this just adds
+ * the richest source when a host is present. data may be NULL.
+ */
+void OSTLS_StirEntropy(const void *data, unsigned long len);
+
+/*
  * Statistical self-test (Stage E). Extracts a batch of seeds and checks
  * for non-degenerate output: successive seeds differ, byte values spread
  * across the range, bit balance near 50%. Returns 0 on pass, nonzero on

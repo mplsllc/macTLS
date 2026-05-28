@@ -291,6 +291,18 @@ OSTLS_EntropySampleCount(void)
     return (unsigned long)g_sample_count;
 }
 
+void
+OSTLS_StirEntropy(const void *data, unsigned long len)
+{
+    if (data != NULL && len > 0) {
+        pool_update(data, (size_t)len);
+    }
+    /* Always fold a fresh timestamp. The bytes carry entropy, but so does
+     * *when* the host called us -- event-arrival cadence, key-press
+     * latency -- independent of the bytes themselves. */
+    OSTLS_StirTimer(len);
+}
+
 int
 OSTLS_EntropySelfTest(unsigned long *out_fp)
 {
