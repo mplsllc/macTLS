@@ -291,6 +291,101 @@ OSTLS_EntropySampleCount(void)
 }
 
 int
+OSTLS_EntropySelfTest(unsigned long *out_fp)
+{
+    unsigned char seed[OSTLS_SEED_BYTES];
+    unsigned char prev[OSTLS_SEED_BYTES];
+    long hist[256];
+    br_sha256_context fp_ctx;
+    unsigned char fp_out[32];
+    unsigned long fp;
+    long ones;
+    long dups;
+    long nonempty;
+    long maxbucket;
+    long total_bits;
+    long half;
+    long tol;
+    int i;
+    int j;
+    int b;
+    int n_seeds;
+    int pass;
+    static const unsigned char test_tag[8] =
+        { 'm', 'a', 'c', 'S', 't', 's', 't', 0 };
+
+    n_seeds = 64;
+
+    /* Freshen the pool so the batch reflects live state, then draw a run
+     * of seeds and tally byte/bit statistics. */
+    pool_ensure_init();
+    OSTLS_CollectEntropy();
+    OSTLS_StirTimer(0x53454C46UL);      /* 'SELF' */
+
+    for (i = 0; i < 256; i++) hist[i] = 0;
+    ones = 0;
+    dups = 0;
+    br_sha256_init(&fp_ctx);
+
+    for (i = 0; i < n_seeds; i++) {
+        pool_extract(test_tag, sizeof test_tag, seed);
+        if (i > 0) {
+            int same = 1;
+            for (j = 0; j < OSTLS_SEED_BYTES; j++) {
+                if (seed[j] != prev[j]) { same = 0; break; }
+            }
+            if (same) dups++;        /* two identical seeds in a row = bug */
+        }
+        for (j = 0; j < OSTLS_SEED_BYTES; j++) {
+            unsigned int c = (unsigned int)seed[j];
+            hist[c]++;
+            for (b = 0; b < 8; b++) {
+                if (c & (1U << b)) ones++;
+            }
+            prev[j] = seed[j];
+        }
+        br_sha256_update(&fp_ctx, seed, OSTLS_SEED_BYTES);
+    }
+
+    total_bits = (long)n_seeds * OSTLS_SEED_BYTES * 8L;
+
+    nonempty = 0;
+    maxbucket = 0;
+    for (i = 0; i < 256; i++) {
+        if (hist[i] > 0) nonempty++;
+        if (hist[i] > maxbucket) maxbucket = hist[i];
+    }
+
+    /* 32-bit fingerprint of the whole batch. Compare across separate
+     * launches: it MUST differ. That cross-run difference is the real
+     * entropy proof -- the within-run checks below only guard against
+     * degenerate output, since a SHA-256 chain looks random regardless
+     * of how much true entropy fed it. */
+    br_sha256_out(&fp_ctx, fp_out);
+    fp = ((unsigned long)fp_out[0] << 24) |
+         ((unsigned long)fp_out[1] << 16) |
+         ((unsigned long)fp_out[2] << 8)  |
+          (unsigned long)fp_out[3];
+    if (out_fp) *out_fp = fp;
+
+    half = total_bits / 2;
+    tol  = total_bits / 20;             /* +/-5% */
+
+    pass = 1;
+    if (dups != 0)        pass = 0;     /* successive seeds must differ */
+    if (nonempty < 250)   pass = 0;     /* output must spread (exp ~256) */
+    if (maxbucket > 40)   pass = 0;     /* no value dominates (exp ~8) */
+    if (ones < half - tol || ones > half + tol) pass = 0;  /* bit balance */
+
+    OSTLS_LogLinef("macEntropy selftest: seeds=%d dups=%ld buckets=%ld/256 maxbkt=%ld",
+                   n_seeds, dups, nonempty, maxbucket);
+    OSTLS_LogLinef("macEntropy selftest: ones=%ld/%ld fp=%08lX %s",
+                   ones, total_bits, fp, pass ? "PASS" : "FAIL");
+
+    return pass ? 0 : 1;
+}
+
+int
 OSTLS_InjectEntropy(br_ssl_engine_context *eng)
 {
     int local_var;

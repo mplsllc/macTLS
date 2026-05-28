@@ -81,4 +81,16 @@ void OSTLS_SaveSeed(void);
 void OSTLS_StirTimer(unsigned long hint);
 unsigned long OSTLS_EntropySampleCount(void);
 
+/*
+ * Statistical self-test (Stage E). Extracts a batch of seeds and checks
+ * for non-degenerate output: successive seeds differ, byte values spread
+ * across the range, bit balance near 50%. Returns 0 on pass, nonzero on
+ * fail, and writes a 32-bit fingerprint of the batch to *out_fp (NULL is
+ * allowed). Compare the fingerprint across separate launches: it MUST
+ * differ, which is the real proof that per-run entropy is incorporated.
+ * The within-run checks only guard against degenerate output, since a
+ * SHA-256 hash chain looks random regardless of input entropy.
+ */
+int OSTLS_EntropySelfTest(unsigned long *out_fp);
+
 #endif /* OSTLS_ENTROPY_H */

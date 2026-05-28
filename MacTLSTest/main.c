@@ -55,6 +55,7 @@
 #include "ostls_fetch.h"
 #include "ostls_d1_probe.h"
 #include "ostls_async.h"
+#include "ostls_entropy.h"
 #include "ostls_log.h"
 
 
@@ -463,6 +464,24 @@ main(void)
         show_result_and_wait(title_buf, line1_buf, line2_buf);
         OSTLS_LogClose();
         return 0;
+    }
+
+    /*
+     * Stage E: entropy statistical self-test. In-memory; validates the
+     * macEntropy pool produces non-degenerate output (distinct seeds,
+     * byte-value spread, bit balance near 50%). Non-fatal -- logs
+     * PASS/FAIL plus a 32-bit batch fingerprint, then continues so the
+     * network stages still run. The fingerprint MUST differ across
+     * separate launches; that cross-run difference is the real entropy
+     * proof (the within-run checks only catch degenerate output).
+     */
+    {
+        unsigned long e_fp = 0;
+        int e_fail;
+        OSTLS_LogLine("Stage E    entropy selftest         ...");
+        e_fail = OSTLS_EntropySelfTest(&e_fp);
+        OSTLS_LogLinef("Stage E    entropy selftest         -> %s (fp=%08lX)",
+                       e_fail ? "FAIL" : "PASS", e_fp);
     }
 
     /*
