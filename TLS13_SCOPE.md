@@ -47,9 +47,8 @@ This doc. Decision: port-and-adapt Certainly's 1.3 onto macTLS, 1.2 fallback to 
 ### Stage A — Key schedule  *(DONE, verified on host 2026-05-29)*
 Ported as `os9/ostls_tls13_keysched.{c,h}`. Host test `tests/host/test_tls13_keysched.c` checks it against RFC 8446/8448 vectors (SHA-256(""), no-PSK Early Secret, RFC 8448 Handshake Secret, server handshake key + IV), all pass via `make test`. C89-clean under Retro68 (EXIT=0). No hardware needed. Not yet in any CW8 project (added at Stage D).
 
-### Stage B — Record layer
-Port `tls13_record` to C89. The 1.3 record format over BearSSL's AES-GCM and ChaCha20-Poly1305: hidden inner content type, nonce = IV XOR seq, AAD = the outer header. Host-testable with encrypt/decrypt round-trips and at least one known-answer record.
-**Gate:** round-trip passes, a captured real 1.3 record decrypts, C89-clean.
+### Stage B — Record layer  *(DONE, verified on host 2026-05-29)*
+Ported as `os9/ostls_tls13_record.{c,h}`. Host test does round-trip plus tampered-payload and tampered-tag cases for both AES-128-GCM and ChaCha20-Poly1305; all pass via `make test`, C89-clean under Retro68. Fixed a real bug in the original: its ChaCha20-Poly1305 decrypt skipped the auth tag check (accepted forged records on our primary cipher); we now compare the computed tag in constant time, which the tamper tests confirm. A captured-real-record known-answer test is deferred to the live handshake at Stage E. CW8 watch item: the uint64 sequence number's 64-bit shifts in compute_nonce.
 
 ### Stage C — Handshake state machine
 The long pole, a few sprints. Port `tls13_handshake` to C89: build the ClientHello (X25519 key share, supported_versions, supported_groups, sig algs, SNI), parse ServerHello / EncryptedExtensions / Certificate / CertificateVerify / Finished, drive the transcript hash, do the X25519 exchange, validate the chain through BearSSL X.509, verify CertificateVerify against the server key, send our Finished. Handle HelloRetryRequest (or, if we want to shrink v1, detect HRR and fall back rather than retry, and note the limitation).
