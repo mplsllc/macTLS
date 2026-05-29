@@ -57,6 +57,7 @@
 #include "ostls_async.h"
 #include "ostls_entropy.h"
 #include "ostls_tls13_selftest.h"
+#include "ostls_tls13_otprobe.h"
 #include "ostls_log.h"
 
 
@@ -1110,6 +1111,25 @@ main(void)
         } else {
             OSTLS_LogLine("Stage D3   session resumption    -> FAIL (connect error)");
         }
+    }
+
+    /*
+     * Stage G: TLS 1.3 handshake over Open Transport. The on-device proof
+     * that the ported handshake completes on real PPC against a live 1.3
+     * server (mactrove serves TLSv1.2+1.3), validating the chain against
+     * the embedded anchors. Same handshake driver verified on host; here
+     * the bytes move over OT. Not wired into the fetch path yet -- that's
+     * the Stage D async integration.
+     */
+    {
+        OSErr  g_result;
+        char   g_msg[180];
+        UInt16 g_cipher = 0;
+        OSTLS_LogLine("Stage G    TLS 1.3 handshake over OT (mactrove.com) ...");
+        g_result = OSTLS_TLS13_OTProbe("mactrove.com:443", "mactrove.com",
+                                       g_msg, sizeof g_msg, &g_cipher);
+        OSTLS_LogLinef("Stage G    TLS 1.3 over OT          -> code=%d %s cipher=0x%04X",
+                       (int)g_result, g_msg, (unsigned)g_cipher);
     }
 
     show_result_and_wait(title_buf, line1_buf, line2_buf);
