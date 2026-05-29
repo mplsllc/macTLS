@@ -977,6 +977,21 @@ static tls13_hs_result tls13_parse_server_hello(tls13_hs_ctx *hs,
             }
             break;
 
+        case TLS13_EXT_PRE_SHARED_KEY:
+            /*
+             * ServerHello pre_shared_key is a single uint16
+             * selected_identity. Its presence means the server accepted
+             * our resumption PSK; we offer exactly one identity (index 0),
+             * so any echo is an accept. Absence => declined => the normal
+             * full handshake runs (Certificate path). macTLS#2 Stage D.
+             */
+            if (ext_len != 2) {
+                hs->error = BR_ERR_BAD_PARAM;
+                return kTLS13_Error;
+            }
+            hs->resumption_accepted = 1;
+            break;
+
         default:
             /* Ignore unknown extensions */
             break;
@@ -1123,7 +1138,17 @@ static tls13_hs_result tls13_parse_server_hello(tls13_hs_ctx *hs,
          * 3. Derive traffic keys from transcript hash
          */
         tls13_ks_init(&hs->ks, hs->transcript.hash);
-        tls13_ks_extract_early(&hs->ks);
+        /* macTLS#2 Stage D: on an accepted resumption the Early Secret
+         * comes from the resumption PSK, not zeros. If we didn't offer a
+         * PSK, or the server declined (no pre_shared_key echo), use the
+         * normal no-PSK path. The Handshake Secret still folds in the
+         * fresh ECDHE shared secret (psk_dhe_ke) either way. */
+        if (hs->resumption_accepted && hs->offer_ticket != NULL) {
+            tls13_ks_extract_early_psk(&hs->ks, hs->offer_ticket->psk,
+                                       hs->offer_ticket->psk_len);
+        } else {
+            tls13_ks_extract_early(&hs->ks);
+        }
         tls13_ks_extract_handshake(&hs->ks, shared_secret, shared_len);
 
         /* Wipe the shared secret immediately after use */
@@ -1478,7 +1503,12 @@ static tls13_hs_result tls13_state_recv_encrypted_extensions(
     /* Update transcript hash with the full handshake message */
     tls13_transcript_update(&hs->transcript, hs->msg_buf, 4 + body_len);
 
-    hs->state = kTLS13_RecvCertRequestOrCert;
+    /* macTLS#2 Stage D: on an accepted resumption the server sends no
+     * Certificate / CertificateVerify — EncryptedExtensions is followed
+     * directly by the server Finished. Otherwise take the normal
+     * Certificate path. */
+    hs->state = hs->resumption_accepted ? kTLS13_RecvFinished
+                                        : kTLS13_RecvCertRequestOrCert;
     return kTLS13_OK;
 }
 

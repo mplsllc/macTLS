@@ -221,6 +221,7 @@ typedef struct {
     int                          resuming;
     const tls13_session_ticket  *offer_ticket;
     uint32_t                     offer_obfuscated_age;
+    int                          resumption_accepted; /* server echoed PSK */
 } tls13_hs_ctx;
 
 /*

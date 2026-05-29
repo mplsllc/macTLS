@@ -93,11 +93,15 @@ binders (continuing the running transcript so HRR works). `tls13_compute_binder`
 has a host KAT in test_tls13_ticket.c (vs HKDF reference). The byte-assembly's
 true gate is a server accepting the binder — verified end-to-end at Stage E.
 
-### Stage D — Resumed key schedule + accept/reject
-Early Secret = `HKDF-Extract(0, res_psk)` (not zeros); derive binder_key. If
-ServerHello echoes `pre_shared_key(selected_identity)` → resumption accepted,
-skip Certificate/CertificateVerify, jump to server Finished. If absent → fall
-through to the existing full-handshake cert path. Host-verify both branches.
+### Stage D — Resumed key schedule + accept/reject  *(code DONE 2026-05-30; live gate at E)*
+ServerHello parser now handles `pre_shared_key` (single uint16
+selected_identity) and sets `hs->resumption_accepted`. When accepted, the
+Early Secret comes from the PSK (`tls13_ks_extract_early_psk`) instead of
+zeros — the Handshake Secret still folds in the fresh ECDHE (psk_dhe_ke) —
+and EncryptedExtensions advances straight to RecvFinished, skipping
+Certificate/CertificateVerify. When the server declines (no echo) everything
+falls through to the existing full-handshake path untouched. C89-clean, full
+host suite still green; correctness proven by the live resume at Stage E.
 
 ### Stage E — Ticket cache + async integration
 Build the host-keyed RAM cache (fixed slot table, LRU, lifetime expiry; takes
