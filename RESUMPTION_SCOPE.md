@@ -1,0 +1,101 @@
+# TLS 1.3 Session Resumption for macTLS
+
+## Why this, why now
+
+The single biggest per-page cost on a G3 is the TLS handshake: an ECDHE key
+exchange (P-384 is brutal on a 233–450 MHz PPC) **plus** an RSA/ECDSA
+certificate-chain verification, paid fresh on every connection — and a page
+opens many (HTML + each CSS/image/font). Resumption lets us reconnect to a
+site we've already talked to by presenting a "ticket" the server handed us,
+skipping the cert verify entirely and, in the common case, most of the key
+exchange work. It's the only purely-performance lever in the macTLS roadmap.
+
+## The bet (locked at Stage 0)
+
+- **`psk_dhe_ke` only.** Always run a fresh ECDHE alongside the PSK (keeps
+  forward secrecy, and the server still picks the curve). Skip `psk_ke`.
+- **1-RTT resumption only. No 0-RTT / `early_data` in v1.** 0-RTT adds replay
+  risk and a second key schedule for marginal extra savings; defer.
+- **One ticket per host, cached in RAM** (small fixed table, LRU). Not
+  persisted to disk in v1 — survives within a browsing session, not across
+  relaunches.
+- **SHA-256 suites only at first.** The resumption PSK is hash-bound; a ticket
+  minted under AES_128_GCM_SHA256 can't resume into a SHA-384 suite. Cache the
+  suite/hash with the ticket and only offer the PSK to a matching suite.
+- **Graceful fallback always.** A missing/expired/rejected ticket just means a
+  normal full handshake. Resumption is never load-bearing for correctness.
+
+## Scope
+
+In: derive resumption secret, parse + cache NewSessionTicket, build a
+resumption ClientHello (`psk_key_exchange_modes` + `pre_shared_key` + binder),
+resumed key schedule, ServerHello accept/reject handling, async-layer wiring.
+Out (v1): 0-RTT/early_data, on-disk ticket persistence, multiple tickets per
+host, KeyUpdate, post-quantum.
+
+## Compatibility floors
+
+Real servers that issue tickets (mactrove/Cloudflare/nginx, 68kmla). Same
+hardware floor as 1.3 (G3 iMac OS 9.2.2). Must not regress the full-handshake
+path when no ticket is present.
+
+## Current state (what 1.3 already gives us)
+
+- Key schedule derives Early → Handshake → Master and app/finished keys
+  ([ostls_tls13_keysched.c]); **no** resumption_master_secret yet — add it.
+- NewSessionTicket is **silently discarded** in `tls13_handle_post_handshake`
+  ([ostls_tls13_handshake.c] ~L2207) — replace with parse + store.
+- Connection struct has `host[256]` and a lazy `hs13` context
+  ([ostls_async.c]) — natural cache key + where to consult/populate.
+- HKDF-Expand-Label + transcript machinery already exist and are correct
+  (the [[project_mactls_hkdf_expand_overflow]] scratch-buffer rule applies to
+  any sub-digest output here too).
+
+## Stages (hardware-gated, like 1.3 / macEntropy)
+
+### Stage 0 — Design lock
+The bet above. No code.
+
+### Stage A — Resumption secret derivation  *(DONE, host KAT 2026-05-29)*
+`tls13_ks_derive_resumption_master` (Derive-Secret(Master, "res master",
+transcript-through-client-Finished)) + `tls13_ks_derive_resumption_psk`
+(HKDF-Expand-Label(res_master, "resumption", ticket_nonce, hash_len)) in
+[ostls_tls13_keysched.c]. Known-answer test in
+tests/host/test_tls13_keysched.c (`test_resumption`) pins both against an
+independent HKDF-Expand-Label reference; passes alongside the existing
+RFC 8448 vectors.
+
+### Stage B — Ticket parse + RAM cache
+Parse NewSessionTicket (lifetime, age_add, nonce, ticket bytes, extensions).
+Store `{ticket, res_psk, age_add, suite/hash, received_ticks, lifetime}` keyed
+by host. Expire on lifetime.
+
+### Stage C — Resumption ClientHello + binder *(host test)*
+When a live ticket exists: add `psk_key_exchange_modes(psk_dhe_ke)` and
+`pre_shared_key` (MUST be the last extension): identity = ticket +
+obfuscated_ticket_age; binder = HMAC(binder_key, Transcript-Hash(ClientHello
+**without** the binders)). The transcript-truncation + binder patch-in is the
+one fiddly part — test the binder against openssl before going further.
+
+### Stage D — Resumed key schedule + accept/reject
+Early Secret = `HKDF-Extract(0, res_psk)` (not zeros); derive binder_key. If
+ServerHello echoes `pre_shared_key(selected_identity)` → resumption accepted,
+skip Certificate/CertificateVerify, jump to server Finished. If absent → fall
+through to the existing full-handshake cert path. Host-verify both branches.
+
+### Stage E — Async integration
+Wire the cache into OSTLSConnection/global: populate on NewSessionTicket,
+consult on OSTLS_Start. Host-verify a real resume (openssl s_server issuing
+tickets, then a live site).
+
+### Stage F — Hardware verification *(gate)*
+On the G3, time full vs resumed handshake to a real ticketing server. Accept
+when the resumed connection completes, app-data flows, and it's measurably
+faster (cert-verify + ECDHE-verify skipped).
+
+## Reference
+
+RFC 8446 §2.2 (resumption + PSK), §4.2.11 (pre_shared_key), §4.2.9
+(psk_key_exchange_modes), §4.6.1 (NewSessionTicket), §7.1 (key schedule incl.
+resumption_master_secret). Certainly's resumption path (cloned at
+/home/patrick/Webs/certainly) is the C reference, same as the 1.3 port.

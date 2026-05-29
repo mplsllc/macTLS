@@ -71,4 +71,22 @@ void tls13_ks_derive_finished_key(tls13_keysched *ks,
                                   const void *base_key,
                                   void *finished_key);
 
+/* Session resumption (macTLS#2 Stage A).
+ * resumption_master_secret = Derive-Secret(Master, "res master",
+ *     Hash(ClientHello..client Finished)). Call while ks->secret still
+ * holds the Master Secret, with a transcript snapshot taken AFTER the
+ * client's own Finished. Output is hash_len bytes. */
+void tls13_ks_derive_resumption_master(tls13_keysched *ks,
+                                       const void *transcript_hash,
+                                       void *res_master_out);
+
+/* Per-ticket resumption PSK = HKDF-Expand-Label(res_master, "resumption",
+ * ticket_nonce, Hash.length). Computed once per NewSessionTicket; feeds
+ * HKDF-Extract as the Early Secret IKM on the resumed connection. */
+void tls13_ks_derive_resumption_psk(tls13_keysched *ks,
+                                     const void *res_master,
+                                     const void *ticket_nonce,
+                                     size_t nonce_len,
+                                     void *psk_out);
+
 #endif /* OSTLS_TLS13_KEYSCHED_H */

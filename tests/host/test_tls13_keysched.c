@@ -138,6 +138,53 @@ static void test_handshake_secret(void)
     }
 }
 
+/* Session resumption derivation (macTLS#2 Stage A).
+ *
+ * resumption_master_secret = Derive-Secret(Master, "res master", transcript)
+ * PSK                      = HKDF-Expand-Label(res_master, "resumption",
+ *                                              nonce, hash_len)
+ *
+ * The two new functions are thin wrappers over hkdf_expand_label /
+ * derive_secret, which the tests above already prove correct against
+ * RFC 8448. This case pins the label strings + lengths against an
+ * independent HKDF-Expand-Label reference (synthetic inputs: master =
+ * 0x01*32, transcript = 0x02*32, ticket_nonce = 0x0000). Expected values
+ * computed offline with a stand-alone HMAC-SHA256 HKDF-Expand-Label. */
+static void test_resumption(void)
+{
+    tls13_keysched ks;
+    unsigned char master[32];
+    unsigned char transcript[32];
+    unsigned char nonce[2];
+    unsigned char res_master[32];
+    unsigned char psk[32];
+    unsigned char expected_res_master[32];
+    unsigned char expected_psk[32];
+
+    memset(master, 0x01, sizeof master);
+    memset(transcript, 0x02, sizeof transcript);
+    nonce[0] = 0x00; nonce[1] = 0x00;
+
+    hex_to_bytes(
+        "588dbc357ac38bc9ca9e2453bd20586a"
+        "27bddda0f77e64a320e0369b27926e5e",
+        expected_res_master, 32);
+    hex_to_bytes(
+        "56a90b755ea996212c7e870b390a6163"
+        "53d34eb6314b80e1147057b778a5c264",
+        expected_psk, 32);
+
+    tls13_ks_init(&ks, &br_sha256_vtable);
+    memcpy(ks.secret, master, 32);   /* stand in for the Master Secret */
+
+    tls13_ks_derive_resumption_master(&ks, transcript, res_master);
+    assert_bytes("Resumption master secret", expected_res_master,
+                 res_master, 32);
+
+    tls13_ks_derive_resumption_psk(&ks, res_master, nonce, 2, psk);
+    assert_bytes("Resumption PSK", expected_psk, psk, 32);
+}
+
 int main(void)
 {
     printf("=== TLS 1.3 Key Schedule Tests (macTLS) ===\n\n");
@@ -145,6 +192,7 @@ int main(void)
     test_empty_hash();
     test_early_secret();
     test_handshake_secret();
+    test_resumption();
 
     printf("\n%d test(s) failed.\n", failures);
     return failures > 0 ? 1 : 0;

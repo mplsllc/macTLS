@@ -294,3 +294,50 @@ void tls13_ks_derive_finished_key(tls13_keysched *ks,
                       "finished", 8, NULL, 0,
                       finished_key, ks->hash_len);
 }
+
+/*
+ * Session resumption (RFC 8446 Section 7.1, macTLS#2 Stage A).
+ *
+ * resumption_master_secret = Derive-Secret(Master Secret, "res master",
+ *                                ClientHello..client Finished)
+ *
+ * MUST be called while ks->secret still holds the Master Secret (it does:
+ * tls13_ks_derive_app_keys reads but never overwrites ks->secret). The
+ * transcript_hash argument is Hash() over the full handshake THROUGH the
+ * client's Finished -- note that is one message later than the app-keys
+ * transcript (which stops at the server Finished), so the caller takes a
+ * fresh transcript snapshot right after sending its own Finished.
+ */
+void tls13_ks_derive_resumption_master(tls13_keysched *ks,
+                                       const void *transcript_hash,
+                                       void *res_master_out)
+{
+    derive_secret(ks->hash, ks->hash_len,
+                  ks->secret,
+                  "res master", 10,
+                  transcript_hash,
+                  res_master_out);
+}
+
+/*
+ * Per-ticket resumption PSK:
+ *   PSK = HKDF-Expand-Label(resumption_master_secret, "resumption",
+ *                           ticket_nonce, Hash.length)
+ *
+ * Each NewSessionTicket carries its own nonce, so this is computed once
+ * per ticket from the single resumption_master_secret. The nonce is
+ * variable length (not a hash), so we call hkdf_expand_label directly
+ * rather than derive_secret. Output is hash_len bytes -- the PSK that
+ * feeds HKDF-Extract as the Early Secret IKM on the resumed connection.
+ */
+void tls13_ks_derive_resumption_psk(tls13_keysched *ks,
+                                     const void *res_master,
+                                     const void *ticket_nonce,
+                                     size_t nonce_len,
+                                     void *psk_out)
+{
+    hkdf_expand_label(ks->hash, res_master, ks->hash_len,
+                      "resumption", 10,
+                      ticket_nonce, nonce_len,
+                      psk_out, ks->hash_len);
+}
