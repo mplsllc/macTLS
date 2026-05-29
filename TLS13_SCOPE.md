@@ -44,9 +44,8 @@ Same as the rest of macTLS, plus two things to watch:
 ### Stage 0 — Design lock
 This doc. Decision: port-and-adapt Certainly's 1.3 onto macTLS, 1.2 fallback to the existing engine, X25519 + SHA-256 AEAD only. *(this commit)*
 
-### Stage A — Key schedule
-Port `tls13_keysched` to C89. It's pure crypto over BearSSL HKDF, no platform code, so it builds and runs on Linux. Bring Certainly's `test_keysched.c` over and check the derived secrets against RFC 8446 test vectors.
-**Gate:** host test passes on Linux; C89-clean under Retro68.
+### Stage A — Key schedule  *(DONE, verified on host 2026-05-29)*
+Ported as `os9/ostls_tls13_keysched.{c,h}`. Host test `tests/host/test_tls13_keysched.c` checks it against RFC 8446/8448 vectors (SHA-256(""), no-PSK Early Secret, RFC 8448 Handshake Secret, server handshake key + IV), all pass via `make test`. C89-clean under Retro68 (EXIT=0). No hardware needed. Not yet in any CW8 project (added at Stage D).
 
 ### Stage B — Record layer
 Port `tls13_record` to C89. The 1.3 record format over BearSSL's AES-GCM and ChaCha20-Poly1305: hidden inner content type, nonce = IV XOR seq, AAD = the outer header. Host-testable with encrypt/decrypt round-trips and at least one known-answer record.
