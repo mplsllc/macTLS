@@ -1066,19 +1066,21 @@ main(void)
     }
 
     /*
-     * Stage D3: TLS session resumption. Connect to www.google.com twice
-     * (a different cache key than D2's google.com, so the cache starts
-     * empty for it). The first handshake is full and pulls the cert
-     * chain; the second should be abbreviated if resumption works, which
-     * shows up as far fewer bytes received during the handshake. Look for
-     * the 'macTLS resume: cached session' / 'offering cached session'
-     * lines in the log too.
+     * Stage D3: TLS session resumption. Connect to mactrove.com twice
+     * and compare handshake bytes. The first handshake is full and pulls
+     * the cert chain; the second should be abbreviated if the server does
+     * session-ID resumption (nginx with ssl_session_cache on, served
+     * directly rather than fronted by a CDN that prefers tickets). Watch
+     * for the 'macTLS resume: cached session' / 'offering cached session'
+     * lines in the log. BearSSL is session-ID only, no tickets, so big
+     * CDNs (Google, Cloudflare) will decline; a cooperating origin server
+     * is the right target to prove the abbreviated path.
      */
     {
         UInt32 r1, r2;
-        OSTLS_LogLine("Stage D3   session resumption (2x www.google.com) ...");
-        r1 = d3_handshake_recv("www.google.com", 443, "www.google.com");
-        r2 = d3_handshake_recv("www.google.com", 443, "www.google.com");
+        OSTLS_LogLine("Stage D3   session resumption (2x mactrove.com) ...");
+        r1 = d3_handshake_recv("mactrove.com", 443, "mactrove.com");
+        r2 = d3_handshake_recv("mactrove.com", 443, "mactrove.com");
         OSTLS_LogLinef("Stage D3   connect 1 handshake recv=%lu bytes (full)",
                        (unsigned long)r1);
         OSTLS_LogLinef("Stage D3   connect 2 handshake recv=%lu bytes (resume?)",
