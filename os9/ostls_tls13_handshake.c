@@ -2142,6 +2142,21 @@ static tls13_hs_result tls13_state_send_finished(tls13_hs_ctx *hs)
     tls13_transcript_update(&hs->transcript, hs_msg, hs_msg_len);
 
     /*
+     * Step 7.5 (macTLS#2): derive the resumption_master_secret now that
+     * the transcript includes the client Finished. hs->ks.secret still
+     * holds the Master Secret (extract_master ran in RecvFinished and
+     * nothing has overwritten it), so Derive-Secret(Master, "res master",
+     * Hash(..client Finished)) is valid here. Reuses the transcript_hash
+     * scratch (re-snapshotted to include the Finished just added; it is
+     * wiped with the rest below). Kept for the connection lifetime so any
+     * NewSessionTicket can mint its PSK.
+     */
+    tls13_transcript_snapshot(&hs->transcript, transcript_hash);
+    tls13_ks_derive_resumption_master(&hs->ks, transcript_hash,
+                                      hs->res_master);
+    hs->res_master_valid = 1;
+
+    /*
      * Step 8: Switch write_ctx to application keys.
      * The client application keys were stashed in client_hs_secret by
      * RecvFinished: [key (key_len bytes)] [iv (12 bytes)].
@@ -2190,6 +2205,72 @@ static tls13_hs_result tls13_state_send_finished(tls13_hs_ctx *hs)
  *   kTLS13_OK    — message handled (e.g., NewSessionTicket discarded)
  *   kTLS13_Error — unrecoverable error (e.g., KeyUpdate or unknown type)
  */
+/*
+ * Parse a NewSessionTicket (RFC 8446 4.6.1), header included:
+ *   uint32 ticket_lifetime; uint32 ticket_age_add;
+ *   opaque ticket_nonce<0..255>; opaque ticket<1..2^16-1>;
+ *   Extension extensions<0..2^16-2>;
+ * Fills `out` with a ready-to-reuse ticket (PSK already minted from
+ * res_master + nonce). Bounds-checked against the message's own declared
+ * length so trailing bytes / coalesced messages can't be over-read.
+ * Returns 0 on success, -1 on malformed / oversize / no res_master.
+ * macTLS#2 Stage B.
+ */
+int tls13_parse_new_session_ticket(tls13_hs_ctx *hs,
+                                    const unsigned char *msg, size_t msg_len,
+                                    tls13_session_ticket *out)
+{
+    size_t off, lim;
+    uint32_t body_len;
+    uint8_t nonce_len;
+    const unsigned char *nonce;
+    uint16_t tlen;
+    size_t hash_len;
+
+    if (!hs->res_master_valid) return -1;     /* nothing to mint the PSK from */
+    if (msg_len < 4) return -1;
+    if (msg[0] != TLS13_HT_NEW_SESSION_TICKET) return -1;
+
+    body_len = get_u24(msg + 1);
+    lim = (size_t)body_len + 4;               /* end of this message's body */
+    if (lim > msg_len) return -1;             /* truncated */
+
+    off = 4;
+    if (off + 8 > lim) return -1;
+    out->lifetime = ((uint32_t)msg[off] << 24) | ((uint32_t)msg[off + 1] << 16) |
+                    ((uint32_t)msg[off + 2] << 8) | (uint32_t)msg[off + 3];
+    off += 4;
+    out->age_add = ((uint32_t)msg[off] << 24) | ((uint32_t)msg[off + 1] << 16) |
+                   ((uint32_t)msg[off + 2] << 8) | (uint32_t)msg[off + 3];
+    off += 4;
+
+    /* ticket_nonce<0..255> */
+    if (off + 1 > lim) return -1;
+    nonce_len = msg[off];
+    off += 1;
+    if (off + nonce_len > lim) return -1;
+    nonce = msg + off;
+    off += nonce_len;
+
+    /* ticket<1..2^16-1> */
+    if (off + 2 > lim) return -1;
+    tlen = get_u16(msg + off);
+    off += 2;
+    if (tlen == 0 || (size_t)off + tlen > lim) return -1;
+    if (tlen > TLS13_MAX_TICKET_LEN) return -1;   /* too big to cache; skip */
+    memcpy(out->ticket, msg + off, tlen);
+    out->ticket_len = tlen;
+    /* extensions<0..2^16-2> follow but are ignored (no 0-RTT in v1). */
+
+    hash_len = hs->ks.hash_len;               /* 32 (SHA-256) or 48 (SHA-384) */
+    out->cipher_suite = hs->cipher_suite;
+    out->psk_len = hash_len;
+    tls13_ks_derive_resumption_psk(&hs->ks, hs->res_master,
+                                   nonce, nonce_len, out->psk);
+    out->valid = 1;
+    return 0;
+}
+
 tls13_hs_result tls13_handle_post_handshake(tls13_hs_ctx *hs,
                                             const unsigned char *data,
                                             size_t data_len)
@@ -2206,11 +2287,17 @@ tls13_hs_result tls13_handle_post_handshake(tls13_hs_ctx *hs,
     switch (msg_type) {
     case TLS13_HT_NEW_SESSION_TICKET:
         /*
-         * NewSessionTicket — silently discard.
-         * We don't support session resumption (PSK), so there's nothing
-         * to store. The server sends these speculatively; ignoring them
-         * is perfectly valid per RFC 8446.
+         * NewSessionTicket (macTLS#2) — parse and stash for the cache
+         * layer to harvest (it pairs this with the host and stamps the
+         * arrival time). A parse failure (malformed / oversize ticket /
+         * no res_master) is non-fatal: we simply won't be able to resume,
+         * and fall back to a full handshake next time. The server sends
+         * these speculatively, so ignoring a bad one is always valid.
          */
+        if (tls13_parse_new_session_ticket(hs, data, data_len,
+                                           &hs->ticket) == 0) {
+            hs->ticket_valid = 1;
+        }
         return kTLS13_OK;
 
     case TLS13_HT_KEY_UPDATE:

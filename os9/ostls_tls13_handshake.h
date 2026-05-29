@@ -94,6 +94,23 @@ void tls13_transcript_snapshot(const tls13_transcript *t,
 /* Reset for HRR: replace transcript with Hash(message_hash construct) */
 void tls13_transcript_reset_for_hrr(tls13_transcript *t);
 
+/* A parsed, ready-to-reuse session ticket (macTLS#2 Stage B). The
+ * resumption PSK is already derived (nonce folded in), so the nonce is
+ * not retained. `ticket` is the opaque blob we echo back as the PSK
+ * identity on a resumed ClientHello. The cache layer stamps received_ms
+ * and pairs this with a host; `valid` gates use. */
+#define TLS13_MAX_TICKET_LEN 1024
+typedef struct {
+    int           valid;
+    unsigned char psk[64];          /* resumption PSK (psk_len bytes) */
+    size_t        psk_len;          /* = hash_len of cipher_suite */
+    uint16_t      cipher_suite;     /* suite the ticket was minted under */
+    uint32_t      lifetime;         /* ticket_lifetime, seconds */
+    uint32_t      age_add;          /* ticket_age_add (obfuscation addend) */
+    unsigned char ticket[TLS13_MAX_TICKET_LEN];
+    size_t        ticket_len;
+} tls13_session_ticket;
+
 /* Full TLS 1.3 handshake context */
 typedef struct {
     tls13_hs_state      state;
@@ -184,6 +201,16 @@ typedef struct {
 
     /* Error code from BearSSL (if handshake fails) */
     int                 error;
+
+    /* Session resumption (macTLS#2). res_master is the
+     * resumption_master_secret, derived at SendFinished while ks.secret
+     * still holds the Master Secret; it lives for the connection so any
+     * NewSessionTicket can mint its PSK. A parsed ticket lands in
+     * `ticket` with ticket_valid set, for the cache layer to harvest. */
+    unsigned char         res_master[64];
+    int                   res_master_valid;
+    tls13_session_ticket  ticket;
+    int                   ticket_valid;
 } tls13_hs_ctx;
 
 /*
@@ -209,5 +236,15 @@ void tls13_handshake_init(tls13_hs_ctx *hs);
 tls13_hs_result tls13_handle_post_handshake(tls13_hs_ctx *hs,
                                             const unsigned char *data,
                                             size_t data_len);
+
+/* Parse a NewSessionTicket handshake message (macTLS#2 Stage B), incl.
+ * the 4-byte handshake header, and fill `out` with a ready-to-reuse
+ * ticket: the resumption PSK is derived from hs->res_master + the
+ * ticket's nonce, the opaque ticket blob is copied, and lifetime /
+ * age_add / cipher_suite are captured. Returns 0 on success, -1 on a
+ * malformed message, oversize ticket, or missing res_master. */
+int tls13_parse_new_session_ticket(tls13_hs_ctx *hs,
+                                    const unsigned char *msg, size_t msg_len,
+                                    tls13_session_ticket *out);
 
 #endif /* OSTLS_TLS13_HANDSHAKE_H */

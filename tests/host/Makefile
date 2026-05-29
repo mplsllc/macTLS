@@ -18,7 +18,7 @@ BSSL_ALL = $(shell find $(BEARSSL)/src -name '*.c')
 
 OS9 = ../../os9
 
-TESTS = test_tls13_keysched test_tls13_record
+TESTS = test_tls13_keysched test_tls13_record test_tls13_ticket
 
 # Offline crypto tests against known vectors.
 test: $(TESTS)
@@ -44,6 +44,16 @@ test_tls13_keysched: test_tls13_keysched.c ../../os9/ostls_tls13_keysched.c
 
 test_tls13_record: test_tls13_record.c ../../os9/ostls_tls13_record.c
 	$(CC) $(CFLAGS) test_tls13_record.c ../../os9/ostls_tls13_record.c $(BSSL) -o $@
+
+# Ticket parse pulls in handshake.c, which references ec/x509/rsa, so it
+# needs the full BearSSL like the live handshake test.
+test_tls13_ticket: test_tls13_ticket.c
+	$(CC) -D_GNU_SOURCE $(CFLAGS) -Wno-pointer-sign \
+	  test_tls13_ticket.c \
+	  $(OS9)/ostls_tls13_handshake.c $(OS9)/ostls_tls13_keysched.c \
+	  $(OS9)/ostls_tls13_record.c $(OS9)/ostls_entropy.c \
+	  $(OS9)/ostls_log.c $(OS9)/ostls_b3_anchors.c \
+	  $(BSSL_ALL) -o $@
 
 clean:
 	rm -f $(TESTS) test_tls13_handshake

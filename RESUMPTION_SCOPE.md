@@ -65,10 +65,18 @@ tests/host/test_tls13_keysched.c (`test_resumption`) pins both against an
 independent HKDF-Expand-Label reference; passes alongside the existing
 RFC 8448 vectors.
 
-### Stage B — Ticket parse + RAM cache
-Parse NewSessionTicket (lifetime, age_add, nonce, ticket bytes, extensions).
-Store `{ticket, res_psk, age_add, suite/hash, received_ticks, lifetime}` keyed
-by host. Expire on lifetime.
+### Stage B — Ticket parse + PSK mint  *(DONE, host test 2026-05-29)*
+`tls13_parse_new_session_ticket` ([ostls_tls13_handshake.c]) parses the
+message (lifetime, age_add, nonce, ticket, extensions skipped), mints the
+resumption PSK from `res_master` + nonce, and fills a `tls13_session_ticket`.
+res_master is derived at SendFinished (Step 7.5) while the Master Secret is
+still live and stashed on the hs ctx; the post-handshake handler stashes the
+parsed ticket in `hs->ticket`/`ticket_valid`. Host test
+tests/host/test_tls13_ticket.c verifies field extraction, the minted PSK (vs
+an HKDF reference), and the malformed/oversize/no-res_master rejection paths.
+**The host-keyed RAM cache that stores tickets across connections moved to
+Stage E** (its only consumer is OSTLS_Start, so it lives with the async
+wiring).
 
 ### Stage C — Resumption ClientHello + binder *(host test)*
 When a live ticket exists: add `psk_key_exchange_modes(psk_dhe_ke)` and
@@ -83,10 +91,12 @@ ServerHello echoes `pre_shared_key(selected_identity)` → resumption accepted,
 skip Certificate/CertificateVerify, jump to server Finished. If absent → fall
 through to the existing full-handshake cert path. Host-verify both branches.
 
-### Stage E — Async integration
-Wire the cache into OSTLSConnection/global: populate on NewSessionTicket,
-consult on OSTLS_Start. Host-verify a real resume (openssl s_server issuing
-tickets, then a live site).
+### Stage E — Ticket cache + async integration
+Build the host-keyed RAM cache (fixed slot table, LRU, lifetime expiry; takes
+an explicit `now` so it's host-testable) and wire it into
+OSTLSConnection/global: harvest `hs->ticket` on NewSessionTicket, consult on
+OSTLS_Start to decide full vs resumed. Host-verify a real resume (openssl
+s_server issuing tickets, then a live site).
 
 ### Stage F — Hardware verification *(gate)*
 On the G3, time full vs resumed handshake to a real ticketing server. Accept
