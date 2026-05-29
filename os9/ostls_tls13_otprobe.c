@@ -49,7 +49,7 @@ static unsigned long TickCount(void) { return 0; }
 static OTConfigurationRef OTCreateConfiguration(const char *s){(void)s;return (OTConfigurationRef)1;}
 static EndpointRef OTOpenEndpointInContext(OTConfigurationRef c,unsigned long f,void *p,OSStatus *e,void *x){(void)c;(void)f;(void)p;(void)x;*e=noErr;return (EndpointRef)1;}
 static OSStatus OTSetSynchronous(EndpointRef e){(void)e;return noErr;}
-static OSStatus OTSetBlocking(EndpointRef e){(void)e;return noErr;}
+static OSStatus OTSetNonBlocking(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTBind(EndpointRef e,void *a,void *b){(void)e;(void)a;(void)b;return noErr;}
 static OSStatus OTConnect(EndpointRef e,TCall *c,void *r){(void)e;(void)c;(void)r;return noErr;}
 static OTResult OTSnd(EndpointRef e,void *b,long n,long f){(void)e;(void)b;(void)f;return n;}
@@ -98,7 +98,7 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
     size_t recv_len;
     unsigned long deadline;
     int done, ok;
-    int dbg;
+    int last_state;
 
     if (out_cipher != NULL) *out_cipher = 0;
 
@@ -115,7 +115,12 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
         return (OSErr)2;
     }
     OTSetSynchronous(ep);
-    OTSetBlocking(ep);
+    /* Non-blocking: OTRcv returns whatever bytes are available (or
+     * kOTNoDataErr if none) rather than blocking trying to fill our big
+     * buffer. The drive loop polls and lets the step consume complete
+     * records as they arrive. Blocking + a large buffer made OTRcv stall
+     * ~60s waiting to fill before returning the (complete) ServerHello. */
+    OTSetNonBlocking(ep);
 
     oterr = OTBind(ep, NULL, NULL);
     if (oterr != noErr) {
@@ -171,7 +176,7 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
     recv_len = 0;
     done = 0;
     ok = 0;
-    dbg = 0;
+    last_state = -1;
     deadline = TickCount() + (unsigned long)(60UL * 60UL);  /* 60s */
 
     while (!done) {
@@ -182,32 +187,27 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
             break;
         }
 
-        if (dbg < 40) {
-            OSTLS_LogLinef("  T13[%d] PRE-step rlen=%lu state=%d",
-                           dbg, (unsigned long)recv_len, (int)gT13Hs.state);
-        }
         r = tls13_handshake_step(&gT13Hs, gT13Recv, &recv_len, server_name);
 
-        if (dbg < 24) {
-            OSTLS_LogLinef("  T13[%d] r=%d state=%d msglen=%lu off=%lu rlen=%lu",
-                           dbg, (int)r, (int)gT13Hs.state,
+        /* Log only on state change, so the no-data poll doesn't spam. */
+        if ((int)gT13Hs.state != last_state) {
+            OSTLS_LogLinef("  T13 state->%d (r=%d msglen=%lu rlen=%lu)",
+                           (int)gT13Hs.state, (int)r,
                            (unsigned long)gT13Hs.msg_len,
-                           (unsigned long)gT13Hs.msg_offset,
                            (unsigned long)recv_len);
+            last_state = (int)gT13Hs.state;
         }
 
         /* Flush any outgoing message fully before advancing. */
         while (gT13Hs.msg_offset < gT13Hs.msg_len) {
             OTResult sent = OTSnd(ep, gT13Hs.msg_buf + gT13Hs.msg_offset,
                                   (long)(gT13Hs.msg_len - gT13Hs.msg_offset), 0);
-            if (dbg < 24) {
-                OSTLS_LogLinef("  T13[%d] OTSnd sent=%ld", dbg, (long)sent);
-            }
             if (sent < 0) {
                 ot13_status(out_msg, out_msg_len, "T13: OTSnd FAIL", (long)sent);
                 done = 1;
                 break;
             }
+            OSTLS_LogLinef("  T13 OTSnd sent=%ld", (long)sent);
             gT13Hs.msg_offset += (size_t)sent;
         }
         if (done) break;
@@ -230,23 +230,13 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
         } else if (r == kTLS13_WantRead) {
             OTResult got = OTRcv(ep, gT13Recv + recv_len,
                                  (long)(sizeof(gT13Recv) - recv_len), NULL);
-            if (dbg < 24) {
-                OSTLS_LogLinef("  T13[%d] OTRcv got=%ld rlen=%lu",
-                               dbg, (long)got, (unsigned long)recv_len);
-            }
             if (got > 0) {
-                if (dbg < 40) {
-                    OSTLS_LogLinef("  T13[%d] recv[0..4]=%02X %02X %02X %02X %02X",
-                                   dbg,
-                                   (unsigned)gT13Recv[recv_len + 0],
-                                   (unsigned)gT13Recv[recv_len + 1],
-                                   (unsigned)gT13Recv[recv_len + 2],
-                                   (unsigned)gT13Recv[recv_len + 3],
-                                   (unsigned)gT13Recv[recv_len + 4]);
-                }
+                OSTLS_LogLinef("  T13 OTRcv got=%ld (rlen now %lu)",
+                               (long)got,
+                               (unsigned long)(recv_len + (size_t)got));
                 recv_len += (size_t)got;
             } else if (got == kOTNoDataErr) {
-                /* blocking should not hit this; loop (deadline bounds it) */
+                /* no data yet -- poll again (deadline-bounded) */
             } else {
                 ot13_status(out_msg, out_msg_len, "T13: OTRcv FAIL/closed",
                             (long)got);
@@ -254,7 +244,6 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
             }
         }
         /* WantWrite / OK: already flushed; loop. */
-        dbg++;
     }
 
     OTSndOrderlyDisconnect(ep);
