@@ -145,42 +145,64 @@ void tls13_handshake_init(tls13_hs_ctx *hs)
  * br_hmac_drbg_context — we can't use BearSSL's engine PRNG because
  * the engine hasn't started its own handshake.
  */
-static int tls13_generate_x25519_keypair(tls13_hs_ctx *hs,
-                                         br_hmac_drbg_context *rng)
+/* Map a TLS named-group to BearSSL's curve id (0 = unsupported). */
+static int tls13_br_curve_for_group(uint16_t group)
 {
-    const br_ec_impl *ec = &br_ec_c25519_m15;
+    switch (group) {
+    case TLS13_GROUP_X25519:    return BR_EC_curve25519;
+    case TLS13_GROUP_SECP256R1: return BR_EC_secp256r1;
+    case TLS13_GROUP_SECP384R1: return BR_EC_secp384r1;
+    default:                    return 0;
+    }
+}
+
+/* ECDHE shared-secret length (the field/X-coordinate size) for a group. */
+static size_t tls13_ecdh_secret_len(uint16_t group)
+{
+    switch (group) {
+    case TLS13_GROUP_X25519:    return 32;
+    case TLS13_GROUP_SECP256R1: return 32;
+    case TLS13_GROUP_SECP384R1: return 48;
+    default:                    return 0;
+    }
+}
+
+/*
+ * Generate an ephemeral ECDHE key pair for `group` (X25519, P-256, or
+ * P-384). Stores the private scalar and the public point (X25519: 32-byte
+ * u-coordinate; NIST: 0x04||X||Y uncompressed) plus their lengths and the
+ * group, in hs. Uses br_ec_get_default() which dispatches per curve.
+ */
+static int tls13_generate_keypair(tls13_hs_ctx *hs, uint16_t group,
+                                  br_hmac_drbg_context *rng)
+{
+    const br_ec_impl *ec = br_ec_get_default();
     br_ec_private_key sk;
     unsigned char kbuf_priv[BR_EC_KBUF_PRIV_MAX_SIZE];
     unsigned char kbuf_pub[BR_EC_KBUF_PUB_MAX_SIZE];
     size_t priv_len, pub_len;
+    int curve = tls13_br_curve_for_group(group);
 
-    /* Generate private key */
-    priv_len = br_ec_keygen(&rng->vtable, ec, &sk,
-                            kbuf_priv, BR_EC_curve25519);
-    if (priv_len == 0) {
-        return -1;
-    }
+    if (curve == 0) return -1;
 
-    /* Compute public key from private key */
+    priv_len = br_ec_keygen(&rng->vtable, ec, &sk, kbuf_priv, curve);
+    if (priv_len == 0) return -1;
+
     pub_len = br_ec_compute_pub(ec, NULL, kbuf_pub, &sk);
-    if (pub_len == 0) {
+    if (pub_len == 0 ||
+        sk.xlen > sizeof(hs->ecdhe_secret) ||
+        pub_len > sizeof(hs->ecdhe_public)) {
+        secure_wipe(kbuf_priv, sizeof(kbuf_priv));
         return -1;
     }
 
-    /*
-     * Store the key pair. For X25519:
-     * - Private key is 32 bytes (the scalar)
-     * - Public key from BearSSL is 32 bytes (the u-coordinate)
-     *
-     * BearSSL's br_ec_compute_pub for Curve25519 returns just the
-     * 32-byte u-coordinate (no 0x04 prefix like NIST curves).
-     */
-    memcpy(hs->ecdhe_secret, sk.x, 32);
-    memcpy(hs->ecdhe_public, kbuf_pub, 32);
+    memcpy(hs->ecdhe_secret, sk.x, sk.xlen);
+    hs->ecdhe_secret_len = sk.xlen;
+    memcpy(hs->ecdhe_public, kbuf_pub, pub_len);
+    hs->ecdhe_public_len = pub_len;
+    hs->ecdhe_group = group;
 
-    /* Wipe the temporary private key buffer */
     secure_wipe(kbuf_priv, sizeof(kbuf_priv));
-
     return 0;
 }
 
@@ -372,20 +394,24 @@ static int tls13_build_client_hello(tls13_hs_ctx *hs,
     /* ── Extension: Supported Groups — type 10 ── */
     {
         /*
-         * Format:
-         *   ext_type (2)
-         *   ext_data_length (2)
-         *   named_group_list_length (2)
-         *   named_group (2) = 0x001D (X25519)
+         * Advertise X25519 (preferred), then the NIST curves P-256 and
+         * P-384 so servers that disable X25519 (FIPS/compliance zones)
+         * can still negotiate — they'll HelloRetryRequest us to the curve
+         * they require. Format: ext_type, ext_data_len, list_len, then the
+         * 2-byte named groups.
          */
-        if (pos + 4 + 4 > buf_size) return -1;
+        if (pos + 4 + 2 + 6 > buf_size) return -1;
         put_u16(buf + pos, TLS13_EXT_SUPPORTED_GROUPS);
         pos += 2;
-        put_u16(buf + pos, 4);  /* ext_data_length */
+        put_u16(buf + pos, 8);  /* ext_data_length: list_len(2) + 3*2 */
         pos += 2;
-        put_u16(buf + pos, 2);  /* named_group_list_length */
+        put_u16(buf + pos, 6);  /* named_group_list_length: 3 groups */
         pos += 2;
         put_u16(buf + pos, TLS13_GROUP_X25519);
+        pos += 2;
+        put_u16(buf + pos, TLS13_GROUP_SECP256R1);
+        pos += 2;
+        put_u16(buf + pos, TLS13_GROUP_SECP384R1);
         pos += 2;
     }
 
@@ -442,32 +468,28 @@ static int tls13_build_client_hello(tls13_hs_ctx *hs,
     /* ── Extension: Key Share — type 51 ── */
     {
         /*
-         * Format:
-         *   ext_type (2)
-         *   ext_data_length (2)
-         *   client_shares_length (2)
-         *   named_group (2) = 0x001D (X25519)
-         *   key_exchange_length (2) = 32
-         *   key_exchange (32) = our X25519 public key
-         *
-         * This is the "optimistic" key share — we include our public key
-         * right in the ClientHello so the server can complete the key
-         * exchange in its ServerHello without a round trip. If the server
-         * wants a different group, it sends HelloRetryRequest.
+         * One KeyShareEntry for the group we generated a keypair for
+         * (hs->ecdhe_group): X25519 on the first flight, or the
+         * server-requested NIST curve on a HelloRetryRequest retry. The
+         * server completes the exchange from this share, or HRRs us to a
+         * group we advertised but didn't share.
+         * Format: ext_type, ext_data_len, client_shares_len, named_group,
+         *   key_exchange_len, key_exchange(public point).
          */
-        if (pos + 4 + 2 + 2 + 2 + 32 > buf_size) return -1;
+        size_t klen = hs->ecdhe_public_len;
+        if (pos + 4 + 2 + 2 + 2 + klen > buf_size) return -1;
         put_u16(buf + pos, TLS13_EXT_KEY_SHARE);
         pos += 2;
-        put_u16(buf + pos, 38);  /* ext_data_length: 2 + 2 + 2 + 32 */
+        put_u16(buf + pos, (uint16_t)(6 + klen));  /* ext_data_length: 2+2+2+klen */
         pos += 2;
-        put_u16(buf + pos, 36);  /* client_shares_length: 2 + 2 + 32 */
+        put_u16(buf + pos, (uint16_t)(4 + klen));  /* client_shares_length: 2+2+klen */
         pos += 2;
-        put_u16(buf + pos, TLS13_GROUP_X25519);
+        put_u16(buf + pos, hs->ecdhe_group);
         pos += 2;
-        put_u16(buf + pos, 32);  /* key_exchange_length */
+        put_u16(buf + pos, (uint16_t)klen);  /* key_exchange_length */
         pos += 2;
-        memcpy(buf + pos, hs->ecdhe_public, 32);
-        pos += 32;
+        memcpy(buf + pos, hs->ecdhe_public, klen);
+        pos += klen;
     }
 
     /* ── Extension: Cookie — type 44 (only on HelloRetryRequest retry) ── */
@@ -572,41 +594,52 @@ static const unsigned char hrr_random[32] = {
 };
 
 /*
- * Compute X25519 shared secret.
+ * Compute the ECDHE shared secret for `group`.
  *
- * Performs scalar multiplication: shared_secret = private_key * peer_public_key.
- * BearSSL's mul() operates in-place on the point buffer, so we copy the
- * peer's public key first, then multiply.
+ * Scalar-multiplies the peer's public point by our private key (in place),
+ * then extracts the shared secret: for X25519 the whole 32-byte result; for
+ * the NIST curves the X coordinate of the resulting 0x04||X||Y point. Writes
+ * the secret to out and its length to *out_len.
  *
- * Returns 0 on success, -1 on error (e.g. peer sent point at infinity).
+ * Returns 0 on success, -1 on error (unsupported group, bad point, overflow).
  */
-static int tls13_x25519_shared_secret(const unsigned char *private_key,
-                                      const unsigned char *peer_public_key,
-                                      unsigned char *shared_secret)
+static int tls13_ecdh_shared(uint16_t group,
+                             const unsigned char *priv, size_t priv_len,
+                             const unsigned char *peer_pub, size_t peer_pub_len,
+                             unsigned char *out, size_t *out_len)
 {
-    const br_ec_impl *ec = &br_ec_c25519_m15;
+    const br_ec_impl *ec = br_ec_get_default();
+    unsigned char point[133];   /* worst case: P-521 uncompressed (133) */
     uint32_t result;
+    int curve = tls13_br_curve_for_group(group);
+    size_t flen = tls13_ecdh_secret_len(group);
 
-    /*
-     * Copy the peer's public key into the output buffer.
-     * BearSSL's mul() does the multiplication in-place: the point G
-     * is replaced with x * G. For X25519, the point is just the
-     * 32-byte u-coordinate (no 0x04 prefix).
-     */
-    memcpy(shared_secret, peer_public_key, 32);
-
-    /*
-     * Perform scalar multiplication: shared_secret = private_key * peer_public.
-     * BearSSL's mul() handles clamping of the private key internally
-     * for Curve25519.
-     */
-    result = ec->mul(shared_secret, 32, private_key, 32, BR_EC_curve25519);
-
-    if (result == 0) {
-        secure_wipe(shared_secret, 32);
+    if (curve == 0 || flen == 0 || peer_pub_len == 0 ||
+        peer_pub_len > sizeof(point)) {
         return -1;
     }
 
+    /* mul() works in place on the point buffer. */
+    memcpy(point, peer_pub, peer_pub_len);
+    result = ec->mul(point, peer_pub_len, priv, priv_len, curve);
+    if (result == 0) {
+        secure_wipe(point, sizeof(point));
+        return -1;
+    }
+
+    if (group == TLS13_GROUP_X25519) {
+        /* The whole 32-byte result is the shared secret. */
+        memcpy(out, point, flen);
+    } else {
+        /* NIST: shared point is 0x04 || X || Y; secret is X. */
+        if (peer_pub_len < 1 + flen) {
+            secure_wipe(point, sizeof(point));
+            return -1;
+        }
+        memcpy(out, point + 1, flen);
+    }
+    *out_len = flen;
+    secure_wipe(point, sizeof(point));
     return 0;
 }
 
@@ -674,7 +707,9 @@ static tls13_hs_result tls13_parse_server_hello(tls13_hs_ctx *hs,
     int is_hrr;
     int found_supported_versions = 0;
     int found_key_share = 0;
-    unsigned char server_public[32];
+    unsigned char server_public[133];   /* up to P-521 uncompressed point */
+    size_t server_public_len = 0;
+    uint16_t server_share_group = 0;    /* group the server chose / requested (HRR) */
     uint16_t negotiated_version = 0;
 
     /*
@@ -781,32 +816,38 @@ static tls13_hs_result tls13_parse_server_hello(tls13_hs_ctx *hs,
 
         case TLS13_EXT_KEY_SHARE:
             /*
-             * In ServerHello, key_share contains a single KeyShareEntry:
-             *   NamedGroup group (2)
-             *   uint16 key_exchange_length (2)
-             *   opaque key_exchange (key_exchange_length)
-             *
-             * For X25519, key_exchange is 32 bytes (the u-coordinate).
+             * Two forms:
+             *  - HelloRetryRequest: NamedGroup group (2), no key. The
+             *    server is telling us which group to use on the retry.
+             *  - ServerHello: NamedGroup group (2), uint16 key_len (2),
+             *    key_exchange (key_len) — the server's public point.
+             * We distinguish by ext_len (2 = HRR, >2 = real share).
              */
-            if (ext_len < 4) {
+            if (ext_len < 2) {
                 hs->error = BR_ERR_BAD_PARAM;
                 return kTLS13_Error;
             }
             {
                 uint16_t group = get_u16(ext_data);
-                uint16_t ke_len = get_u16(ext_data + 2);
-
-                if (group != TLS13_GROUP_X25519) {
-                    /* Server chose a group we don't support */
-                    hs->error = BR_ERR_BAD_PARAM;
-                    return kTLS13_Error;
+                server_share_group = group;
+                if (ext_len == 2) {
+                    /* HRR group selection — no key present. */
+                    found_key_share = 1;
+                } else {
+                    uint16_t ke_len = get_u16(ext_data + 2);
+                    if (tls13_br_curve_for_group(group) == 0) {
+                        hs->error = BR_ERR_BAD_PARAM;
+                        return kTLS13_Error;
+                    }
+                    if (ke_len == 0 || ext_len != 4 + ke_len ||
+                        ke_len > sizeof(server_public)) {
+                        hs->error = BR_ERR_BAD_PARAM;
+                        return kTLS13_Error;
+                    }
+                    memcpy(server_public, ext_data + 4, ke_len);
+                    server_public_len = ke_len;
+                    found_key_share = 1;
                 }
-                if (ke_len != 32 || ext_len != 4 + 32) {
-                    hs->error = BR_ERR_BAD_PARAM;
-                    return kTLS13_Error;
-                }
-                memcpy(server_public, ext_data + 4, 32);
-                found_key_share = 1;
             }
             break;
 
@@ -879,6 +920,18 @@ static tls13_hs_result tls13_parse_server_hello(tls13_hs_ctx *hs,
         hs->hrr_received = 1;
 
         /*
+         * Record the group the server wants. The retry ClientHello will
+         * generate a key_share for it (see the SendClientHello handler).
+         * If the server named a group we don't support, fail cleanly.
+         */
+        if (tls13_br_curve_for_group(server_share_group) == 0) {
+            hs->error = BR_ERR_BAD_PARAM;
+            return kTLS13_Error;
+        }
+        hs->hrr_group = server_share_group;
+        hs->hrr_pending = 1;   /* transient: tells the dispatcher to resend now */
+
+        /*
          * Update transcript for HRR per RFC 8446 Section 4.4.1:
          *
          * 1. Current transcript has just ClientHello1
@@ -935,18 +988,26 @@ static tls13_hs_result tls13_parse_server_hello(tls13_hs_ctx *hs,
     tls13_transcript_update(&hs->transcript, msg, hs_msg_len + 4);
 
     /*
-     * Compute X25519 shared secret.
+     * Compute the ECDHE shared secret on the negotiated curve.
      */
     {
-        unsigned char shared_secret[32];
+        unsigned char shared_secret[64];   /* up to P-384's 48-byte secret */
         unsigned char transcript_hash[64];
         unsigned char client_key[32], client_iv[12];
         unsigned char server_key[32], server_iv[12];
         size_t key_len;
+        size_t shared_len = 0;
         int ret;
 
-        ret = tls13_x25519_shared_secret(hs->ecdhe_secret, server_public,
-                                         shared_secret);
+        /* The server must answer with the group we key_shared. */
+        if (server_share_group != hs->ecdhe_group) {
+            hs->error = BR_ERR_BAD_PARAM;
+            return kTLS13_Error;
+        }
+        ret = tls13_ecdh_shared(hs->ecdhe_group,
+                                hs->ecdhe_secret, hs->ecdhe_secret_len,
+                                server_public, server_public_len,
+                                shared_secret, &shared_len);
         if (ret != 0) {
             hs->error = BR_ERR_BAD_PARAM;
             return kTLS13_Error;
@@ -962,7 +1023,7 @@ static tls13_hs_result tls13_parse_server_hello(tls13_hs_ctx *hs,
          */
         tls13_ks_init(&hs->ks, hs->transcript.hash);
         tls13_ks_extract_early(&hs->ks);
-        tls13_ks_extract_handshake(&hs->ks, shared_secret, 32);
+        tls13_ks_extract_handshake(&hs->ks, shared_secret, shared_len);
 
         /* Wipe the shared secret immediately after use */
         secure_wipe(shared_secret, sizeof(shared_secret));
@@ -2237,9 +2298,13 @@ static tls13_hs_result tls13_state_send_client_hello(tls13_hs_ctx *hs,
     }
     /* If HRR was received, transcript was already reset by the HRR handler */
 
-    /* Generate X25519 ephemeral key pair (unless retrying after HRR) */
-    if (!hs->hrr_received) {
-        ret = tls13_generate_x25519_keypair(hs, &rng);
+    /* Generate the ephemeral key pair. First flight: X25519. After a
+     * HelloRetryRequest: the curve the server asked for (P-256/P-384).
+     * A fresh keypair is generated each time — the retry must NOT reuse
+     * the X25519 key, or it'll just get rejected again. */
+    {
+        uint16_t kg = hs->hrr_received ? hs->hrr_group : TLS13_GROUP_X25519;
+        ret = tls13_generate_keypair(hs, kg, &rng);
         if (ret != 0) {
             hs->error = BR_ERR_BAD_STATE;
             return kTLS13_Error;
@@ -2320,11 +2385,15 @@ tls13_hs_result tls13_handshake_step(tls13_hs_ctx *hs,
             hs->state = kTLS13_RecvEncryptedExtensions;
             return kTLS13_OK;
         }
-        if (r == kTLS13_WantRead && hs->hrr_received) {
+        if (r == kTLS13_WantRead && hs->hrr_pending) {
             /*
-             * HelloRetryRequest received — go back to send a new
-             * ClientHello with the cookie and possibly a new key share.
+             * A HelloRetryRequest was just parsed — resend the ClientHello
+             * with the server-requested key share. hrr_pending is cleared
+             * so the WantRead we'll return while waiting for the server's
+             * response to the retry isn't mistaken for another HRR (which
+             * caused an infinite SendClientHello<->RecvServerHello loop).
              */
+            hs->hrr_pending = 0;
             hs->state = kTLS13_SendClientHello;
             return kTLS13_OK;
         }

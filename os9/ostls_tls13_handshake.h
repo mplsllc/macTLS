@@ -48,8 +48,12 @@
 #define TLS13_SIG_RSA_PKCS1_SHA256         0x0401
 #define TLS13_SIG_RSA_PKCS1_SHA384         0x0501
 
-/* Named groups */
-#define TLS13_GROUP_X25519  0x001D
+/* Named groups (supported_groups / key_share). X25519 is preferred; the
+ * NIST curves are required by FIPS/compliance servers that disable X25519
+ * (e.g. some Cloudflare zones), reached via HelloRetryRequest. */
+#define TLS13_GROUP_SECP256R1  0x0017
+#define TLS13_GROUP_SECP384R1  0x0018
+#define TLS13_GROUP_X25519     0x001D
 
 /* Handshake state machine states */
 typedef enum {
@@ -98,9 +102,17 @@ typedef struct {
     tls13_record_ctx    read_ctx;    /* decrypt incoming records */
     tls13_record_ctx    write_ctx;   /* encrypt outgoing records */
 
-    /* Ephemeral X25519 key pair */
-    unsigned char       ecdhe_secret[32];
-    unsigned char       ecdhe_public[32];
+    /* Ephemeral ECDHE key pair. Sized for the largest curve we offer
+     * (P-384: 48-byte scalar, 97-byte uncompressed public point); X25519
+     * uses 32/32. ecdhe_group is the named-group the current keypair is
+     * for; *_len are the actual byte lengths in use. */
+    unsigned char       ecdhe_secret[64];
+    unsigned char       ecdhe_public[133];
+    uint16_t            ecdhe_group;     /* TLS13_GROUP_* of the current keypair */
+    size_t              ecdhe_secret_len;
+    size_t              ecdhe_public_len;
+    uint16_t            hrr_group;       /* group requested by HelloRetryRequest (0 = none) */
+    int                 hrr_pending;     /* transient: an HRR was just parsed, resend CH now */
 
     /* Traffic secrets (kept for Finished key derivation) */
     unsigned char       client_hs_secret[64];

@@ -29,6 +29,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <signal.h>
 
 #include "bearssl.h"
 #include "../../os9/ostls_tls13_handshake.h"
@@ -209,9 +210,14 @@ int main(int argc, char **argv)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
 
     /* --- drive the handshake --- */
+    signal(SIGPIPE, SIG_IGN);   /* report send errors instead of dying */
     while (!done && steps < 400) {
         tls13_hs_result r = tls13_handshake_step(&hs, recv_buf, &recv_len, host);
         steps++;
+        fprintf(stderr, "  step %d: state=%d r=%d msglen=%lu recvlen=%lu group=0x%04x hrr=%d\n",
+                steps, (int)hs.state, (int)r,
+                (unsigned long)hs.msg_len, (unsigned long)recv_len,
+                (unsigned)hs.ecdhe_group, (int)hs.hrr_received);
 
         /* flush any outgoing message fully before advancing */
         while (hs.msg_offset < hs.msg_len) {
