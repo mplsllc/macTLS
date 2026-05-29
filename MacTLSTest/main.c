@@ -979,13 +979,15 @@ main(void)
                 UInt16 suite = OSTLS_GetCipherSuite(conn);
                 const char *label;
                 switch (suite) {
+                case 0x1301: label = "TLS1.3 AES128-GCM-SHA256";      break;
+                case 0x1303: label = "TLS1.3 CHACHA20-POLY1305";      break;
                 case 0xC02B: label = "TLS1.2 ECDHE-ECDSA AES128-GCM"; break;
                 case 0xC02C: label = "TLS1.2 ECDHE-ECDSA AES256-GCM"; break;
                 case 0xC02F: label = "TLS1.2 ECDHE-RSA AES128-GCM";   break;
                 case 0xC030: label = "TLS1.2 ECDHE-RSA AES256-GCM";   break;
                 case 0xCCA8: label = "TLS1.2 ECDHE-RSA CHACHA20";     break;
                 case 0xCCA9: label = "TLS1.2 ECDHE-ECDSA CHACHA20";   break;
-                default:     label = "TLS1.2";                        break;
+                default:     label = "TLS?";                          break;
                 }
                 OSTLS_LogLinef("Stage D2   handshake OK %s 0x%04X",
                                label, (unsigned)suite);
@@ -1098,8 +1100,13 @@ main(void)
     {
         UInt32 r1, r2;
         OSTLS_LogLine("Stage D3   session resumption (2x mactrove.com) ...");
+        /* Session-ID resumption is a TLS 1.2 feature in this stack (1.3
+         * PSK/ticket resumption is out of scope). Force the 1.2 path so
+         * this stage measures what it's meant to; restore 1.3 after. */
+        OSTLS_SetTryTLS13(0);
         r1 = d3_handshake_recv("mactrove.com", 443, "mactrove.com");
         r2 = d3_handshake_recv("mactrove.com", 443, "mactrove.com");
+        OSTLS_SetTryTLS13(1);
         OSTLS_LogLinef("Stage D3   connect 1 handshake recv=%lu bytes (full)",
                        (unsigned long)r1);
         OSTLS_LogLinef("Stage D3   connect 2 handshake recv=%lu bytes (resume?)",

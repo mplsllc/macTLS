@@ -265,4 +265,12 @@ UInt16      OSTLS_GetCipherSuite(OSTLSConnection *conn);
 void        OSTLS_GetDiagnostics(OSTLSConnection *conn, OSTLSDiagnostics *out_diag);
 void *      OSTLS_GetUserRefcon(OSTLSConnection *conn);
 
+/*
+ * Process-wide switch for the TLS 1.3 path. Enabled by default: every
+ * connection offers 1.3 and falls back to 1.2 automatically if the
+ * server declines. Pass 0 to force 1.2-only (e.g. to isolate a problem
+ * to one protocol). Affects connections started after the call.
+ */
+void        OSTLS_SetTryTLS13(int enabled);
+
 #endif /* OSTLS_ASYNC_H */

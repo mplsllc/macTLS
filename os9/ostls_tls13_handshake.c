@@ -1163,6 +1163,18 @@ static tls13_hs_result tls13_read_encrypted_hs(
                 return kTLS13_Error;
             }
 
+            /*
+             * out_data is hs->msg_buf. Never copy more than it holds --
+             * a large Certificate message would otherwise overflow it
+             * and corrupt the struct (the original crash on big cert
+             * chains). msg_buf is sized >= plain_buf so this can't fire
+             * for a single-record message, but guard regardless.
+             */
+            if (total_hs > sizeof(hs->msg_buf)) {
+                hs->error = BR_ERR_BAD_PARAM;
+                return kTLS13_Error;
+            }
+
             /* Copy the handshake message to out_data */
             memcpy(out_data, hs->plain_buf + hs->plain_offset, total_hs);
             *out_len = total_hs;
@@ -1188,6 +1200,17 @@ static tls13_hs_result tls13_read_encrypted_hs(
 
         if (*recv_len < total) {
             return kTLS13_WantRead;
+        }
+
+        /*
+         * Decrypt writes (record_len - tag) bytes into plain_buf, so the
+         * record must fit. A compliant server's TLSCiphertext fragment is
+         * <= 2^14 + 256 (= sizeof plain_buf); reject anything larger
+         * rather than overflowing the buffer.
+         */
+        if ((size_t)record_len > sizeof(hs->plain_buf)) {
+            hs->error = BR_ERR_BAD_PARAM;
+            return kTLS13_Error;
         }
 
         /* Skip CCS records (middlebox compatibility) */

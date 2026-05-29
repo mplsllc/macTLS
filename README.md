@@ -2,13 +2,15 @@
 
 # macTLS
 
-Native TLS 1.2 for Classic Mac OS 9. macTLS lets a PowerPC Mac running OS 9 open a real, modern HTTPS connection on its own, validate the certificate chain, and read back the decrypted bytes. No proxy, no helper machine, no stripping TLS somewhere upstream. The handshake happens on the Mac.
+Native TLS 1.2 **and TLS 1.3** for Classic Mac OS 9. macTLS lets a PowerPC Mac running OS 9 open a real, modern HTTPS connection on its own, validate the certificate chain, and read back the decrypted bytes. No proxy, no helper machine, no stripping TLS somewhere upstream. The handshake happens on the Mac.
 
-It's verified end to end on a real Power Macintosh G3 running OS 9.1, and it ships today inside [MacSurf](https://github.com/mplsllc/macsurf), which uses it for every `https://` page it loads.
+It's verified end to end on a real Power Macintosh G3 running OS 9.1, and it ships inside [MacSurf](https://github.com/mplsllc/macsurf), which uses it for every `https://` page it loads. **As of 2026-05-29 macTLS speaks TLS 1.3.** It's not a side experiment: the 1.3 path is wired into the same async API MacSurf calls (`OSTLS_New / Start / Pump / Write / Read`), so a normal fetch negotiates 1.3 automatically and falls back to 1.2 when a server doesn't offer it. Verified on the G3 driving the public API: a 1.3 handshake, an HTTP request, and the full decrypted response over Open Transport against Google (ChaCha20-Poly1305, suite `0x1303`). As far as we can tell, that's the first time TLS 1.3 has run natively on Classic Mac OS.
 
 ## What it does
 
-A typical fetch negotiates `TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256` (suite `0xCCA9`). That's a modern, forward-secret suite, and ChaCha20 is the right pick for a CPU with no AES hardware. macTLS validates the server's chain against the full Mozilla root set (121 anchors baked in at build time), checks the hostname and expiry against the Mac's clock, and hands you the plaintext. It works against Google, and against any HTTPS site whose chain ends at one of those roots.
+A typical TLS 1.2 fetch negotiates `TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256` (suite `0xCCA9`). That's a modern, forward-secret suite, and ChaCha20 is the right pick for a CPU with no AES hardware. macTLS validates the server's chain against the full Mozilla root set (121 anchors baked in at build time), checks the hostname and expiry against the Mac's clock, and hands you the plaintext. It works against Google, and against any HTTPS site whose chain ends at one of those roots.
+
+The TLS 1.3 path negotiates `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`) or `TLS_AES_128_GCM_SHA256` (`0x1301`) with X25519 key exchange, validating the chain against the same anchors. It's a hand-written 1.3 handshake (state machine, key schedule, and record layer per RFC 8446) that borrows BearSSL only for primitives — X25519, the AEADs, HKDF/HMAC/SHA-256, and the X.509 validator — because BearSSL itself has no TLS 1.3 and never will. Every connection opens with a 1.3 ClientHello that also advertises 1.2 suites; if the server picks 1.3 the hand-written path runs the connection, and if it declines, macTLS reconnects and lets BearSSL's engine drive a full 1.2 handshake. The switch is invisible to the caller — `OSTLS_Read` / `OSTLS_Write` return the same plaintext either way. Server authentication only for now; client certs, 0-RTT, and 1.3 session resumption are out of this first cut (1.2 session resumption works).
 
 Under the hood it's a thin layer of glue (a few KB) sitting on vendored BearSSL for the crypto and Open Transport for the sockets.
 
@@ -121,17 +123,18 @@ One CW8 quirk worth knowing: if you compile a macTLS `.c` from a project that do
 
 macTLS didn't come out of nowhere. A few related projects:
 
-- [**Certainly**](https://github.com/minorbug/certainly) (minorbug): BearSSL over Open Transport on the Retro68 toolchain, TLS 1.3. Closest sibling. Different toolchain (Retro68 vs CodeWarrior 8) and a pump-loop API rather than a single call, but the same crypto substrate.
+- [**Certainly**](https://github.com/minorbug/certainly) (minorbug, MIT): BearSSL over Open Transport on the Retro68 toolchain, TLS 1.3. Closest sibling, and the basis for macTLS's own 1.3 — we adapted its hand-written `tls13_*` handshake, key schedule, and record modules from C99/Retro68 to CodeWarrior 8 C89, wired them to macTLS's OT pump, macEntropy, and anchor bundle, and fixed a couple of bugs along the way (its ChaCha20-Poly1305 decrypt skipped the auth-tag check; we added a constant-time compare). Attribution is in the source of the ported files.
 - [**MacTLS** (bbenchoff)](https://github.com/bbenchoff/MacTLS): an mbedtls/PolarSSL port to CodeWarrior Pro 4 for Mac OS 7/8/9. First public proof that CodeWarrior plus classic Mac plus TLS works at all. Frozen since 2024, TLS 1.1, one hardcoded site. The name collision is a coincidence, separate projects.
 - [**Crypto Ancienne**](https://github.com/classilla/cryanc) / `carl` (Cameron Kaiser): a TLSe-based proxy tool that runs under MPW, known to work with Classilla. Different runtime model (an MPW shell tool, not a Carbon library), but it shows old browsers can drive a local HTTPS helper if there's one to drive.
 
 ## Status and tags
 
 - **v0.1.0** (2026-05-19): working blocking `OSTLS_Fetch`, verified on G3 / OS 9.1.
-- **v0.2.0**: non-blocking async stream API, code complete and passing Stage D1 + D2 on hardware.
+- **v0.2.0**: non-blocking async stream API, code complete and passing Stage D1 + D2 on hardware. TLS 1.2 session resumption (abbreviated handshake) verified on hardware.
 - **macentropy-v1.0** (2026-05-29): production entropy, hardware-validated and folded into MacSurf, so MacSurf's HTTPS runs on it.
+- **TLS 1.3** (2026-05-29): live through the async public API. On a real G3, `OSTLS_New / Start / Pump / Write / Read` negotiates TLS 1.3 against Google, sends an HTTP request, and reads back the full decrypted response over Open Transport (ChaCha20-Poly1305, suite `0x1303`), with automatic fallback to 1.2. The handshake, key schedule, and record layer also pass the RFC 8446/8448 test vectors on host and on-device. The plan and stage log are in [TLS13_SCOPE.md](TLS13_SCOPE.md).
 
-What's next, roughly in order: the v0.3 HTTP conveniences (redirect following, POST bodies, and session resumption are partly in already), then more downstream consumers beyond MacSurf.
+What's next, roughly in order: the v0.3 HTTP conveniences (redirect following and POST bodies are partly in already); 1.3 session resumption (PSK/tickets), which is what finally gives resumption against the big CDNs; then more downstream consumers beyond MacSurf.
 
 ## License
 

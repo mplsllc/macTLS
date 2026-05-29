@@ -27,10 +27,12 @@
 #include <Types.h>
 #include <Events.h>             /* TickCount */
 #include <Files.h>
+#include <Memory.h>             /* NewPtrClear, DisposePtr */
 #include <OpenTransport.h>
 #include <OpenTptInternet.h>
 extern OTClientContextPtr g_ostls_ot_context;
 #else
+#include <stdlib.h>             /* calloc/free for the NewPtrClear stub */
 /* Non-CW8 syntax-check stubs (mirror B2). Not executed under Retro68. */
 typedef long OSStatus;
 typedef long OTResult;
@@ -45,6 +47,12 @@ typedef struct { unsigned short fAddressType; char fName[1]; } DNSAddress;
 #define noErr 0
 #endif
 #define kOTNoDataErr -3162
+#define kOTLookErr   -3158
+#define T_DISCONNECT 0x00000010L
+#define T_ORDREL     0x00000080L
+static OTResult OTLook(EndpointRef e){(void)e;return 0;}
+static OSStatus OTRcvOrderlyDisconnect(EndpointRef e){(void)e;return noErr;}
+static OSStatus OTRcvDisconnect(EndpointRef e,void *p){(void)e;(void)p;return noErr;}
 static unsigned long TickCount(void) { return 0; }
 static OTConfigurationRef OTCreateConfiguration(const char *s){(void)s;return (OTConfigurationRef)1;}
 static EndpointRef OTOpenEndpointInContext(OTConfigurationRef c,unsigned long f,void *p,OSStatus *e,void *x){(void)c;(void)f;(void)p;(void)x;*e=noErr;return (EndpointRef)1;}
@@ -58,6 +66,8 @@ static OSStatus OTSndOrderlyDisconnect(EndpointRef e){(void)e;return noErr;}
 static OSStatus OTCloseProvider(EndpointRef e){(void)e;return noErr;}
 static long OTInitDNSAddress(DNSAddress *d,const char *s){(void)d;(void)s;return 0;}
 static void OTMemzero(void *p,unsigned long n){memset(p,0,n);}
+static char *NewPtrClear(unsigned long n){return (char *)calloc(1,n);}
+static void DisposePtr(char *p){free(p);}
 extern void *g_ostls_ot_context;
 #endif
 
@@ -66,8 +76,18 @@ extern void *g_ostls_ot_context;
 static br_ssl_client_context  gT13Client;
 static br_x509_minimal_context gT13X509;
 static unsigned char           gT13IoBuf[BR_SSL_BUFSIZE_BIDI];
-static tls13_hs_ctx            gT13Hs;
-static unsigned char           gT13Recv[32768];
+/* The ~34 KB handshake context is NewPtr'd in OSTLS_TLS13_OTProbe and
+ * freed before return, rather than reserved statically for the whole
+ * program. Stage G runs last, but a static gT13Hs would tie up that
+ * memory during the earlier async Stage D2, whose 1.3 connection NewPtr's
+ * its own context at runtime and was failing for lack of heap. */
+static tls13_hs_ctx           *gpT13Hs = NULL;
+/* Inbound record buffer for the probe. 8 KB easily holds the server's
+ * handshake flight (mactrove's was ~2.4 KB; records are consumed as they
+ * arrive) and the single small app record we read back; trimmed from 32 KB
+ * to leave more application heap for the async Stage D2 connection, which
+ * NewPtr's its TLS context at runtime. */
+static unsigned char           gT13Recv[8192];
 static unsigned char           gT13Wire[640];
 /* Decrypted app-data plaintext goes into gT13IoBuf: it's the BearSSL
  * engine record buffer (BR_SSL_BUFSIZE_BIDI, ~33 KB), but the 1.3 path
@@ -110,7 +130,7 @@ static OSErr ot13_appdata(EndpointRef ep, const char *server_name,
     getlen = strlen(get);
 
     clen = 0;
-    if (tls13_record_encrypt(&gT13Hs.write_ctx, get, getlen,
+    if (tls13_record_encrypt(&gpT13Hs->write_ctx, get, getlen,
                              TLS13_CT_APPLICATION_DATA, ct, &clen) != 0) {
         ot13_status(out_msg, out_msg_len, "T13: app-data encrypt FAIL", 0);
         return (OSErr)20;
@@ -141,7 +161,7 @@ static OSErr ot13_appdata(EndpointRef ep, const char *server_name,
             int dr;
             if (rlen < 5 + reclen) break;
             plen = 0; inner = 0;
-            dr = tls13_record_decrypt(&gT13Hs.read_ctx, rbuf + 5, reclen,
+            dr = tls13_record_decrypt(&gpT13Hs->read_ctx, rbuf + 5, reclen,
                                       gT13Plain, &plen, &inner);
             memmove(rbuf, rbuf + 5 + reclen, rlen - (5 + reclen));
             rlen -= (5 + reclen);
@@ -179,6 +199,37 @@ static OSErr ot13_appdata(EndpointRef ep, const char *server_name,
                 rlen += (size_t)got;
             } else if (got == kOTNoDataErr) {
                 /* poll again (deadline-bounded) */
+            } else if (got == 0) {
+                /* Some OT stacks surface the peer's orderly close as a
+                 * 0-byte read rather than kOTLookErr. If there's no more
+                 * buffered record, the connection is done. */
+                if (rlen < 5) {
+                    ot13_status(out_msg, out_msg_len,
+                        "T13: 1.3 OK, peer closed before app-data", 0);
+                    return noErr;
+                }
+                /* else: a complete record is buffered; loop drains it */
+            } else if (got == kOTLookErr) {
+                /* A pending OT event -- typically the server's orderly
+                 * release after it finished sending the response. Consume
+                 * it; if we already extracted the response above we'd have
+                 * returned, so reaching here on close means we got no
+                 * app-data record. */
+                OTResult look = OTLook(ep);
+                if (look == T_ORDREL) {
+                    OTRcvOrderlyDisconnect(ep);
+                    if (rlen < 5) {
+                        ot13_status(out_msg, out_msg_len,
+                            "T13: 1.3 OK, peer closed before app-data", 0);
+                        return noErr;
+                    }
+                    /* else: a complete record is buffered; loop drains it */
+                } else if (look == T_DISCONNECT) {
+                    OTRcvDisconnect(ep, NULL);
+                    ot13_status(out_msg, out_msg_len,
+                        "T13: peer disconnected during app-data", (long)look);
+                    return (OSErr)26;
+                }
             } else {
                 ot13_status(out_msg, out_msg_len, "T13: app-data OTRcv FAIL",
                             (long)got);
@@ -277,9 +328,16 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
         return (OSErr)7;
     }
 
-    tls13_handshake_init(&gT13Hs);
-    gT13Hs.x509_ctx = (const br_x509_class **)&gT13X509.vtable;
-    gT13Hs.eng = &gT13Client.eng;
+    gpT13Hs = (tls13_hs_ctx *)NewPtrClear((unsigned long)sizeof(tls13_hs_ctx));
+    if (gpT13Hs == NULL) {
+        ot13_status(out_msg, out_msg_len, "T13: handshake-context alloc FAIL", 0);
+        OTSndOrderlyDisconnect(ep);
+        OTCloseProvider(ep);
+        return (OSErr)9;
+    }
+    tls13_handshake_init(gpT13Hs);
+    gpT13Hs->x509_ctx = (const br_x509_class **)&gT13X509.vtable;
+    gpT13Hs->eng = &gT13Client.eng;
 
     /* ----- 3. Drive the handshake over OT ----- */
     recv_len = 0;
@@ -296,34 +354,34 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
             break;
         }
 
-        r = tls13_handshake_step(&gT13Hs, gT13Recv, &recv_len, server_name);
+        r = tls13_handshake_step(gpT13Hs, gT13Recv, &recv_len, server_name);
 
         /* Log only on state change, so the no-data poll doesn't spam. */
-        if ((int)gT13Hs.state != last_state) {
+        if ((int)gpT13Hs->state != last_state) {
             OSTLS_LogLinef("  T13 state->%d (r=%d msglen=%lu rlen=%lu)",
-                           (int)gT13Hs.state, (int)r,
-                           (unsigned long)gT13Hs.msg_len,
+                           (int)gpT13Hs->state, (int)r,
+                           (unsigned long)gpT13Hs->msg_len,
                            (unsigned long)recv_len);
-            last_state = (int)gT13Hs.state;
+            last_state = (int)gpT13Hs->state;
         }
 
         /* Flush any outgoing message fully before advancing. */
-        while (gT13Hs.msg_offset < gT13Hs.msg_len) {
-            OTResult sent = OTSnd(ep, gT13Hs.msg_buf + gT13Hs.msg_offset,
-                                  (long)(gT13Hs.msg_len - gT13Hs.msg_offset), 0);
+        while (gpT13Hs->msg_offset < gpT13Hs->msg_len) {
+            OTResult sent = OTSnd(ep, gpT13Hs->msg_buf + gpT13Hs->msg_offset,
+                                  (long)(gpT13Hs->msg_len - gpT13Hs->msg_offset), 0);
             if (sent < 0) {
                 ot13_status(out_msg, out_msg_len, "T13: OTSnd FAIL", (long)sent);
                 done = 1;
                 break;
             }
             OSTLS_LogLinef("  T13 OTSnd sent=%ld", (long)sent);
-            gT13Hs.msg_offset += (size_t)sent;
+            gpT13Hs->msg_offset += (size_t)sent;
         }
         if (done) break;
 
         /* Completion is by STATE, not result code. */
-        if (gT13Hs.state == kTLS13_Complete &&
-            gT13Hs.msg_offset >= gT13Hs.msg_len) {
+        if (gpT13Hs->state == kTLS13_Complete &&
+            gpT13Hs->msg_offset >= gpT13Hs->msg_len) {
             ok = 1;
             done = 1;
             break;
@@ -331,7 +389,7 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
 
         if (r == kTLS13_Error) {
             ot13_status(out_msg, out_msg_len, "T13: handshake Error br_err",
-                        (long)gT13Hs.error);
+                        (long)gpT13Hs->error);
             break;
         } else if (r == kTLS13_Fallback12) {
             ot13_status(out_msg, out_msg_len, "T13: server chose TLS 1.2", 0);
@@ -357,7 +415,7 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
 
     if (ok) {
         OSErr ad_err;
-        if (out_cipher != NULL) *out_cipher = gT13Hs.cipher_suite;
+        if (out_cipher != NULL) *out_cipher = gpT13Hs->cipher_suite;
         /* Drive a real HTTP request/response over the 1.3 record layer.
          * This is what actually exercises the client application keys --
          * the handshake alone completes even with a broken app-key
@@ -366,10 +424,14 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
                               sizeof(gT13Recv), out_msg, out_msg_len);
         OTSndOrderlyDisconnect(ep);
         OTCloseProvider(ep);
+        DisposePtr((char *)gpT13Hs);
+        gpT13Hs = NULL;
         return ad_err;
     }
 
     OTSndOrderlyDisconnect(ep);
     OTCloseProvider(ep);
+    DisposePtr((char *)gpT13Hs);
+    gpT13Hs = NULL;
     return (OSErr)8;
 }

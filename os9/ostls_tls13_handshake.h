@@ -106,8 +106,18 @@ typedef struct {
     unsigned char       client_hs_secret[64];
     unsigned char       server_hs_secret[64];
 
-    /* Buffer for non-certificate handshake messages (outgoing) */
-    unsigned char       msg_buf[4096];
+    /*
+     * Buffer for one handshake message: our outgoing ClientHello /
+     * Finished, AND each INCOMING message extracted from a decrypted
+     * record (EncryptedExtensions, Certificate, CertificateVerify,
+     * Finished). An incoming message can be as large as a full TLS
+     * record plaintext, so this must be at least as big as plain_buf
+     * (16640 = 2^14 + 256, the RFC 8446 max TLSCiphertext fragment).
+     * It was 4096, which overflowed on servers with large certificate
+     * chains (e.g. Google's ~4.5 KB Certificate message) -- the cert
+     * data ran past the end of the buffer and corrupted the struct.
+     */
+    unsigned char       msg_buf[16640];
     size_t              msg_len;
     size_t              msg_offset;
 
@@ -128,7 +138,7 @@ typedef struct {
      * here, advancing plain_offset. When plain_offset == plain_len,
      * we decrypt the next record.
      */
-    unsigned char       plain_buf[16384];
+    unsigned char       plain_buf[16640];   /* >= max TLSCiphertext fragment (2^14 + 256) */
     size_t              plain_len;
     size_t              plain_offset;
 

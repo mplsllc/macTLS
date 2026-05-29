@@ -18,6 +18,8 @@
 #include "ostls_b3_anchors.h"
 #include "ostls_time.h"
 #include "ostls_entropy.h"
+#include "ostls_tls13_handshake.h"   /* TLS 1.3 state machine (live path) */
+#include "ostls_tls13_record.h"      /* TLS 1.3 record encrypt/decrypt    */
 
 #include "bearssl_ssl.h"
 #include "bearssl_x509.h"
@@ -82,6 +84,10 @@ typedef void (*OTNotifyProcPtr)(void *, OTEventCode, OTResult, void *);
 #define T_EXDATA        0x00000008L
 #define T_DISCONNECT    0x00000010L
 #define T_ORDREL        0x00000080L
+/* OT endpoint-state values (OTGetEndpointState) */
+#define T_OUTCON        3
+#define T_DATAXFER      5
+#define T_OUTREL        6
 static OTConfigurationRef OTCreateConfiguration(const char *s){(void)s;return (OTConfigurationRef)1;}
 static OSStatus OTAsyncOpenEndpointInContext(OTConfigurationRef c,unsigned long f,TEndpointInfo *i,OTNotifyProcPtr p,void *x,void *ctx){(void)c;(void)f;(void)i;(void)p;(void)x;(void)ctx;return noErr;}
 static OSStatus OTBind(EndpointRef e,TBind *r,TBind *o){(void)e;(void)r;(void)o;return noErr;}
@@ -94,6 +100,7 @@ static OSStatus OTRcvDisconnect(EndpointRef e,void *p){(void)e;(void)p;return no
 static OSStatus OTSndDisconnect(EndpointRef e,TCall *c){(void)e;(void)c;return noErr;}
 static OSStatus OTRcvConnect(EndpointRef e,TCall *c){(void)e;(void)c;return noErr;}
 static OTResult OTLook(EndpointRef e){(void)e;return 0;}
+static OTResult OTGetEndpointState(EndpointRef e){(void)e;return T_DATAXFER;}
 static OSStatus OTCloseProvider(EndpointRef e){(void)e;return noErr;}
 static long OTInitDNSAddress(DNSAddress *d,const char *s){(void)d;(void)s;return 0;}
 static void OTInitInetAddress(InetAddress *a, InetPort p, InetHost h){(void)a;(void)p;(void)h;}
@@ -121,6 +128,13 @@ extern void *g_ostls_ot_context;
 #define OSTLS_DEFAULT_TIMEOUT 1800UL  /* 30s @ 60Hz */
 
 /*
+ * Master switch for the TLS 1.3 path. On by default: every connection
+ * offers 1.3 (with 1.2 suites advertised for fallback). A consumer can
+ * force 1.2-only by calling OSTLS_SetTryTLS13(0) before OSTLS_Start.
+ */
+static int g_ostls_try_tls13 = 1;
+
+/*
  * Internal phase markers for the connect sub-state machine. Visible
  * publicly only as kOSTLSStateConnecting; we track the substeps
  * here so Pump knows what notifier event to wait for next.
@@ -133,6 +147,20 @@ enum {
     kConnectPhase_NeedsConnect  = 4,
     kConnectPhase_ConnectInFlight = 5,
     kConnectPhase_Done          = 6
+};
+
+/*
+ * TLS version path for a connection. Every connect starts in
+ * kT13Mode_Trying (a 1.3 ClientHello that also advertises 1.2 suites);
+ * if the server picks 1.3 we go to kT13Mode_Open and the 1.3 record
+ * layer carries the data, otherwise the handshake returns Fallback12
+ * and we reconnect with kT13Mode_Off so BearSSL's T0 engine drives a
+ * full 1.2 handshake (matching Certainly's version strategy).
+ */
+enum {
+    kT13Mode_Off    = 0,   /* BearSSL TLS 1.2 engine drives everything */
+    kT13Mode_Trying = 1,   /* 1.3 handshake in progress                */
+    kT13Mode_Open   = 2    /* 1.3 established; our record layer is live */
 };
 
 struct OSTLSConnection {
@@ -189,6 +217,25 @@ struct OSTLSConnection {
     Boolean                   bearssl_initialised;
     Boolean                   handshake_done;
     Boolean                   close_notify_sent;
+
+    /* ----- TLS 1.3 (live path) -----
+     * hs13 holds the 1.3 handshake state plus the read/write record
+     * contexts after completion. The raw inbound record bytes are
+     * buffered in ssl_iobuf (reused: BearSSL's record engine is dormant
+     * while we drive 1.3), tracked by tls13_recv_len. Decrypted app-data
+     * lands in hs13.plain_buf and is fed into read_buf across pumps via
+     * t13_plain_off..t13_plain_len. Outbound app-data is encrypted into
+     * t13_send_rec and flushed across pumps via t13_send_off..len. */
+    tls13_hs_ctx *hs13;                /* lazily NewPtr'd only while 1.3 is attempted; NULL otherwise */
+    int           tls13_mode;          /* one of kT13Mode_* */
+    Boolean       tls13_disabled;      /* set after a Fallback12 reconnect */
+    UInt32        tls13_recv_len;      /* raw inbound bytes held in ssl_iobuf */
+    UInt32        t13_plain_len;       /* decrypted app-data in hs13.plain_buf */
+    UInt32        t13_plain_off;       /* bytes of plain_buf already delivered */
+    unsigned char t13_send_rec[OSTLS_WRITE_BUF_SIZE + 64]; /* one outbound record */
+    UInt32        t13_send_len;
+    UInt32        t13_send_off;
+    UInt32        t13_dbg_state;       /* last-logged hs13 state (crash forensics) */
 
     /* ----- Plaintext ring buffer (read side: BearSSL -> caller) ----- */
     unsigned char read_buf[OSTLS_READ_BUF_SIZE];
@@ -365,6 +412,11 @@ OSTLS_Dispose(OSTLSConnection *conn)
         OTCloseProvider(conn->ep);
         conn->ep = NULL;
         conn->ep_open = false;
+    }
+
+    if (conn->hs13 != NULL) {
+        DisposePtr((char *)conn->hs13);
+        conn->hs13 = NULL;
     }
 
     conn->disposed = true;
@@ -612,8 +664,6 @@ ostls_setup_bearssl(OSTLSConnection *conn)
     UInt32 br_seconds;
     OSErr time_err;
     int entropy_err;
-    int reset_ok;
-    int resume_session = 0;
 
     /* Re-read the clock; the user could have ticked over midnight
      * between Start and the first handshake step (unlikely on a
@@ -639,34 +689,72 @@ ostls_setup_bearssl(OSTLSConnection *conn)
                              conn->ssl_iobuf,
                              sizeof conn->ssl_iobuf, 1);
 
-    /* TLS session resumption. If we cached params from a prior handshake
-     * to this host:port, inject them AND set resume_session so
-     * br_ssl_client_reset actually attempts the abbreviated handshake.
-     * The resume flag has to be non-zero or BearSSL ignores the injected
-     * session and does a full handshake every time (the original
-     * fixes254 bug: it injected the session but passed 0 here). */
-    {
+    conn->bearssl_initialised = true;
+    conn->handshake_start_ticks = (UInt32)TickCount();
+
+    conn->tls13_recv_len = 0;
+    conn->t13_plain_len = 0;
+    conn->t13_plain_off = 0;
+    conn->t13_send_len = 0;
+    conn->t13_send_off = 0;
+
+    /*
+     * Arm the TLS 1.3 path unless this is a post-fallback retry. The 1.3
+     * handshake uses the engine ONLY as a seeded PRNG (keygen) plus the
+     * X.509 validator configured above -- it must NOT br_ssl_client_reset
+     * the engine. Resetting starts BearSSL's own T0 (1.2) handshake, which
+     * generates a ClientHello into ssl_iobuf and competes for the record
+     * buffers the 1.3 path is about to use; Certainly documents the same
+     * "do not reset before 1.3" rule. br_ssl_client_reset + session
+     * resumption happen below ONLY on the 1.2 path (1.3 disabled, a
+     * context-allocation failure, or a Fallback12 reconnect).
+     */
+    if (g_ostls_try_tls13 && !conn->tls13_disabled) {
+        if (conn->hs13 == NULL) {
+            conn->hs13 = (tls13_hs_ctx *)
+                NewPtrClear((unsigned long)sizeof(tls13_hs_ctx));
+        }
+        if (conn->hs13 != NULL) {
+            tls13_handshake_init(conn->hs13);
+            conn->hs13->eng = &conn->sc.eng;
+            conn->hs13->x509_ctx = (const br_x509_class **)&conn->xc.vtable;
+            conn->tls13_mode = kT13Mode_Trying;
+            conn->t13_dbg_state = 0xFFFFFFFFUL;
+            OSTLS_LogLinef("T13 async: armed (server=%s)", conn->server_name);
+        } else {
+            OSTLS_LogLine("T13 async: 1.3 context alloc FAILED -- using TLS 1.2 (low memory)");
+            conn->tls13_mode = kT13Mode_Off;
+        }
+    } else {
+        conn->tls13_mode = kT13Mode_Off;
+    }
+
+    if (conn->tls13_mode == kT13Mode_Off) {
+        /* TLS 1.2 path: offer a cached session for an abbreviated
+         * handshake (resume flag must be non-zero or BearSSL ignores the
+         * injected session -- the original fixes254 bug), then reset the
+         * engine so its T0 program drives the whole handshake. */
+        int resume_session = 0;
         char key[OSTLS_SESS_KEY_LEN];
         br_ssl_session_parameters cached;
+        int reset_ok;
+
         sess_cache_make_key(conn, key, sizeof key);
         if (sess_cache_get(key, &cached)) {
-            br_ssl_engine_set_session_parameters(
-                &conn->sc.eng, &cached);
+            br_ssl_engine_set_session_parameters(&conn->sc.eng, &cached);
             resume_session = 1;
             OSTLS_LogLinef("macTLS resume: offering cached session %s", key);
         }
+
+        reset_ok = br_ssl_client_reset(&conn->sc, conn->server_name,
+                                       resume_session);
+        if (reset_ok == 0) {
+            int br_err = br_ssl_engine_last_error(&conn->sc.eng);
+            return ostls_fail(conn, (OSErr)kOSTLSAsync_ClientResetFail,
+                              noErr, br_err);
+        }
     }
 
-    reset_ok = br_ssl_client_reset(&conn->sc, conn->server_name,
-                                   resume_session);
-    if (reset_ok == 0) {
-        int br_err = br_ssl_engine_last_error(&conn->sc.eng);
-        return ostls_fail(conn, (OSErr)kOSTLSAsync_ClientResetFail,
-                          noErr, br_err);
-    }
-
-    conn->bearssl_initialised = true;
-    conn->handshake_start_ticks = (UInt32)TickCount();
     return kOSTLSEventNone;
 }
 
@@ -1073,6 +1161,458 @@ pump_ring_to_bearssl_sendapp(OSTLSConnection *conn,
 }
 
 
+/* ----------------------------------------------------------------- */
+/* TLS 1.3 path (live)                                               */
+/* ----------------------------------------------------------------- */
+
+/*
+ * Send up to `len` raw bytes over OT. *out_sent receives how many
+ * actually went (may be 0 under flow control). Returns 0 on success,
+ * -1 on terminal failure (connection moved to Failed). Mirrors the
+ * edge-case handling of pump_ot_send_from_bearssl.
+ */
+static int
+ostls_send_raw(OSTLSConnection *conn, const unsigned char *buf,
+               UInt32 len, UInt32 *out_sent)
+{
+    OTResult sent;
+    OTResult state;
+
+    *out_sent = 0;
+    if (len == 0) return 0;
+
+    state = OTGetEndpointState(conn->ep);
+    if (state != T_DATAXFER && state != T_OUTCON) {
+        return 0;  /* can't send in this state; try again next tick */
+    }
+
+    sent = OTSnd(conn->ep, (void *)buf, (long)len, 0);
+    conn->dbg_ot_send_calls++;
+    if (sent >= 0) {
+        *out_sent = (UInt32)sent;
+        conn->dbg_ot_send_bytes += (UInt32)sent;
+        if (sent == 0) conn->dbg_ot_send_zero++;
+        return 0;
+    }
+    if (sent == kOTFlowErr) { conn->dbg_ot_send_flow++; return 0; }
+    if (sent == kOTLookErr) {
+        OTResult look = OTLook(conn->ep);
+        if (look == T_ORDREL) {
+            if (!conn->ord_consumed) {
+                OTRcvOrderlyDisconnect(conn->ep);
+                conn->ord_consumed = true;
+            }
+            conn->peer_closed = true;
+            return 0;
+        } else if (look == T_DISCONNECT) {
+            if (!conn->disc_consumed) {
+                OTRcvDisconnect(conn->ep, NULL);
+                conn->disc_consumed = true;
+            }
+            ostls_fail(conn, (OSErr)kOSTLSAsync_PeerClosed, look, 0);
+            return -1;
+        }
+        return 0;
+    }
+    ostls_fail(conn, (OSErr)kOSTLSAsync_OTSndFail, sent, 0);
+    return -1;
+}
+
+/*
+ * Read one OTRcv worth of bytes into ssl_iobuf (the raw inbound record
+ * buffer for the 1.3 path; BearSSL's record engine is dormant). Returns
+ * 1 if bytes arrived / a close was observed, 0 if no data, -1 fatal.
+ */
+static int
+pump_ot_recv_tls13(OSTLSConnection *conn)
+{
+    unsigned char *rbuf;
+    long rcap;
+    OTResult got;
+    OTResult state;
+
+    if (conn->tls13_recv_len >= (UInt32)sizeof conn->ssl_iobuf) {
+        return 0;  /* full; a complete record must be consumed first */
+    }
+    rbuf = conn->ssl_iobuf + conn->tls13_recv_len;
+    rcap = (long)((UInt32)sizeof conn->ssl_iobuf - conn->tls13_recv_len);
+
+    state = OTGetEndpointState(conn->ep);
+    if (state != T_DATAXFER && state != T_OUTREL) {
+        conn->nf_data_pending = false;
+        return 0;
+    }
+
+    got = OTRcv(conn->ep, rbuf, rcap, NULL);
+    conn->dbg_ot_recv_calls++;
+    if (got > 0) {
+        conn->tls13_recv_len += (UInt32)got;
+        conn->nf_data_pending = false;
+        conn->dbg_ot_recv_bytes += (UInt32)got;
+        OSTLS_StirTimer((unsigned long)got);
+        return 1;
+    } else if (got == kOTNoDataErr) {
+        if (conn->nf_ord_release && !conn->ord_consumed) {
+            OTRcvOrderlyDisconnect(conn->ep);
+            conn->ord_consumed = true;
+            conn->peer_closed = true;
+            return 1;
+        }
+        conn->nf_data_pending = false;
+        conn->dbg_ot_recv_nodata++;
+        return 0;
+    } else if (got == 0) {
+        if (!conn->ord_consumed) {
+            OTRcvOrderlyDisconnect(conn->ep);
+            conn->ord_consumed = true;
+        }
+        conn->peer_closed = true;
+        conn->nf_data_pending = false;
+        return 1;
+    } else if (got == kOTLookErr) {
+        OTResult look = OTLook(conn->ep);
+        if (look == T_ORDREL) {
+            if (!conn->ord_consumed) {
+                OTRcvOrderlyDisconnect(conn->ep);
+                conn->ord_consumed = true;
+            }
+            conn->peer_closed = true;
+            conn->nf_data_pending = false;
+            return 1;
+        } else if (look == T_DISCONNECT) {
+            if (!conn->disc_consumed) {
+                OTRcvDisconnect(conn->ep, NULL);
+                conn->disc_consumed = true;
+            }
+            ostls_fail(conn, (OSErr)kOSTLSAsync_PeerClosed, look, 0);
+            return -1;
+        }
+        return 0;
+    }
+    ostls_fail(conn, (OSErr)kOSTLSAsync_OTRcvFail, got, 0);
+    return -1;
+}
+
+/*
+ * Server declined TLS 1.3. Close the current endpoint and reconnect
+ * to the same host:port with tls13_disabled set, so the reconnect's
+ * setup_bearssl leaves tls13_mode Off and BearSSL's T0 engine drives
+ * a full 1.2 handshake. Matches Certainly's fallback strategy.
+ */
+static OSTLSEvent
+ostls_fallback_to_tls12(OSTLSConnection *conn)
+{
+    OTConfigurationRef cfg;
+    OSStatus oterr;
+
+    OSTLS_LogLine("macTLS: server declined 1.3 -- reconnecting for TLS 1.2");
+
+    if (conn->ep_open && conn->ep != NULL) {
+        OTSndOrderlyDisconnect(conn->ep);
+        OTCloseProvider(conn->ep);
+        conn->ep = NULL;
+        conn->ep_open = false;
+    }
+
+    conn->nf_open_complete = false;
+    conn->nf_bind_complete = false;
+    conn->nf_connect_complete = false;
+    conn->nf_data_pending = false;
+    conn->nf_ord_release = false;
+    conn->nf_disconnect = false;
+    conn->ord_consumed = false;
+    conn->disc_consumed = false;
+    conn->peer_closed = false;
+    conn->bearssl_initialised = false;
+    conn->handshake_done = false;
+    conn->close_notify_sent = false;
+    conn->tls13_mode = kT13Mode_Off;
+    conn->tls13_disabled = true;
+    conn->tls13_recv_len = 0;
+    /* 1.2 doesn't need the 1.3 context; free the ~21 KB now. */
+    if (conn->hs13 != NULL) {
+        DisposePtr((char *)conn->hs13);
+        conn->hs13 = NULL;
+    }
+
+    cfg = OTCreateConfiguration("tcp");
+    if (cfg == NULL || cfg == (OTConfigurationRef)-1L) {
+        return ostls_fail(conn, (OSErr)kOSTLSAsync_OTConfigFail, noErr, 0);
+    }
+    OTMemzero(&conn->ep_info, sizeof conn->ep_info);
+    oterr = OTAsyncOpenEndpointInContext(cfg, 0, &conn->ep_info,
+                                         (OTNotifyProcPtr)ostls_notifier,
+                                         conn, g_ostls_ot_context);
+    if (oterr != noErr) {
+        return ostls_fail(conn, (OSErr)kOSTLSAsync_OTOpenFail, oterr, 0);
+    }
+    conn->state = kOSTLSStateConnecting;
+    conn->connect_phase = kConnectPhase_OpenInFlight;
+    conn->start_ticks = (UInt32)TickCount();
+    return kOSTLSEventNone;
+}
+
+/*
+ * Push staged 1.3 plaintext (hs13.plain_buf[t13_plain_off..t13_plain_len))
+ * into the read ring, same ring discipline as pump_bearssl_recvapp_to_ring.
+ * Returns 1 if any bytes were delivered, 0 if nothing pending or ring full.
+ */
+static int
+pump_tls13_deliver_plain(OSTLSConnection *conn, OSTLSEvent *best_event)
+{
+    UInt32 pending;
+    UInt32 room;
+    UInt32 write_idx;
+    UInt32 free_at_end;
+    UInt32 to_copy;
+
+    pending = conn->t13_plain_len - conn->t13_plain_off;
+    if (pending == 0) return 0;
+    if (conn->read_avail >= (UInt32)sizeof conn->read_buf) return 0;
+
+    room = (UInt32)sizeof conn->read_buf - conn->read_avail;
+    write_idx = (conn->read_pos + conn->read_avail)
+        % (UInt32)sizeof conn->read_buf;
+    free_at_end = (UInt32)sizeof conn->read_buf - write_idx;
+    if (free_at_end > room) free_at_end = room;
+    to_copy = pending;
+    if (to_copy > free_at_end) to_copy = free_at_end;
+
+    memcpy(conn->read_buf + write_idx,
+           conn->hs13->plain_buf + conn->t13_plain_off, to_copy);
+    conn->read_avail += to_copy;
+    conn->t13_plain_off += to_copy;
+    event_bump(best_event, kOSTLSEventReadable);
+    return 1;
+}
+
+/*
+ * If a complete TLS record sits at the front of ssl_iobuf, decrypt it
+ * with the 1.3 read context. App-data is staged in plain_buf for
+ * delivery; post-handshake handshake records (NewSessionTicket /
+ * KeyUpdate) are discarded; alerts close or fail. Returns 1 if a record
+ * was consumed (or a terminal event set), 0 if not enough bytes yet.
+ */
+static int
+pump_tls13_consume_record(OSTLSConnection *conn, OSTLSEvent *best_event)
+{
+    UInt32 reclen;
+    UInt32 total;
+    int dr;
+    uint8_t inner;
+    size_t plen;
+
+    if (conn->tls13_recv_len < 5) return 0;
+    reclen = ((UInt32)conn->ssl_iobuf[3] << 8) | (UInt32)conn->ssl_iobuf[4];
+    total = 5 + reclen;
+    if (conn->tls13_recv_len < total) return 0;  /* await the rest */
+
+    plen = 0;
+    inner = 0;
+    dr = tls13_record_decrypt(&conn->hs13->read_ctx,
+                              conn->ssl_iobuf + 5, (size_t)reclen,
+                              conn->hs13->plain_buf, &plen, &inner);
+
+    /* Slide the consumed record off the front of the buffer. */
+    memmove(conn->ssl_iobuf, conn->ssl_iobuf + total,
+            conn->tls13_recv_len - total);
+    conn->tls13_recv_len -= total;
+
+    if (dr != 0) {
+        ostls_fail(conn, (OSErr)kOSTLSAsync_BearSSLError, noErr, BR_ERR_BAD_MAC);
+        *best_event = kOSTLSEventFailed;
+        return 1;
+    }
+    if (inner == TLS13_CT_APPLICATION_DATA) {
+        conn->t13_plain_len = (UInt32)plen;
+        conn->t13_plain_off = 0;
+        (void)pump_tls13_deliver_plain(conn, best_event);
+        return 1;
+    }
+    if (inner == TLS13_CT_ALERT) {
+        int desc = (plen >= 2) ? (int)conn->hs13->plain_buf[1] : -1;
+        if (desc == 0) {            /* close_notify */
+            conn->peer_closed = true;
+            if (conn->state == kOSTLSStateOpen ||
+                conn->state == kOSTLSStateClosing) {
+                conn->state = kOSTLSStateClosed;
+                event_bump(best_event, kOSTLSEventClosed);
+            }
+        } else {
+            ostls_fail(conn, (OSErr)kOSTLSAsync_BearSSLError, noErr, desc);
+            *best_event = kOSTLSEventFailed;
+        }
+        return 1;
+    }
+    /* handshake record (ticket / key update): ignore. */
+    return 1;
+}
+
+/*
+ * Encrypt one outbound app-data record from the write queue into
+ * t13_send_rec, if the queue is non-empty and no record is in flight.
+ * Returns 1 if a record was built.
+ */
+static int
+pump_tls13_build_send(OSTLSConnection *conn)
+{
+    size_t clen;
+    UInt32 chunk;
+
+    if (conn->t13_send_off < conn->t13_send_len) return 0;  /* in flight */
+    if (conn->write_avail == 0) return 0;
+
+    chunk = conn->write_avail;
+    if (chunk > (UInt32)OSTLS_WRITE_BUF_SIZE) chunk = (UInt32)OSTLS_WRITE_BUF_SIZE;
+
+    clen = 0;
+    if (tls13_record_encrypt(&conn->hs13->write_ctx,
+                             conn->write_buf + conn->write_pos, (size_t)chunk,
+                             TLS13_CT_APPLICATION_DATA,
+                             conn->t13_send_rec + 5, &clen) != 0) {
+        return 0;
+    }
+    conn->t13_send_rec[0] = 0x17;
+    conn->t13_send_rec[1] = 0x03;
+    conn->t13_send_rec[2] = 0x03;
+    conn->t13_send_rec[3] = (unsigned char)(clen >> 8);
+    conn->t13_send_rec[4] = (unsigned char)clen;
+    conn->t13_send_len = (UInt32)(5 + clen);
+    conn->t13_send_off = 0;
+
+    conn->write_pos += chunk;
+    conn->write_avail -= chunk;
+    if (conn->write_avail == 0) conn->write_pos = 0;
+    return 1;
+}
+
+/*
+ * One pump step for the TLS 1.3 path. Drives the handshake state
+ * machine while Handshaking, and the record layer while Open/Closing.
+ * Returns >0 if work was done, 0 if idle (wait for the notifier),
+ * -1 on terminal failure. Same return contract as pump_bearssl_step.
+ */
+static int
+pump_tls13_step(OSTLSConnection *conn, OSTLSEvent *best_event)
+{
+    /* 1) Flush outbound handshake bytes (our ClientHello / Finished).
+     * The state machine must NOT be re-stepped until the current message
+     * is fully on the wire, or it would advance / overwrite msg_buf with
+     * bytes still unsent. So if anything remains, return now (1 if we made
+     * progress this slice, 0 if flow-controlled and idle). */
+    if (conn->hs13->msg_offset < conn->hs13->msg_len) {
+        UInt32 sent = 0;
+        int r = ostls_send_raw(conn,
+                               conn->hs13->msg_buf + conn->hs13->msg_offset,
+                               (UInt32)(conn->hs13->msg_len - conn->hs13->msg_offset),
+                               &sent);
+        if (r < 0) return -1;
+        conn->hs13->msg_offset += sent;
+        if (conn->hs13->msg_offset < conn->hs13->msg_len) {
+            return (sent > 0) ? 1 : 0;
+        }
+        /* fully flushed -- fall through to advance the state machine */
+    }
+
+    /* 2) Flush an outbound app-data record already in flight. */
+    if (conn->t13_send_off < conn->t13_send_len) {
+        UInt32 sent = 0;
+        int r = ostls_send_raw(conn,
+                               conn->t13_send_rec + conn->t13_send_off,
+                               conn->t13_send_len - conn->t13_send_off, &sent);
+        if (r < 0) return -1;
+        conn->t13_send_off += sent;
+        if (conn->t13_send_off >= conn->t13_send_len) {
+            conn->t13_send_len = 0;
+            conn->t13_send_off = 0;
+            event_bump(best_event, kOSTLSEventWritable);
+        }
+        if (sent > 0) return 1;
+    }
+
+    /* 3) Handshake phase. */
+    if (conn->state == kOSTLSStateHandshaking &&
+        conn->tls13_mode == kT13Mode_Trying) {
+        tls13_hs_result r;
+        size_t rl = (size_t)conn->tls13_recv_len;
+
+        r = tls13_handshake_step(conn->hs13, conn->ssl_iobuf,
+                                 &rl, conn->server_name);
+        conn->tls13_recv_len = (UInt32)rl;
+
+        if ((UInt32)conn->hs13->state != conn->t13_dbg_state) {
+            conn->t13_dbg_state = (UInt32)conn->hs13->state;
+            OSTLS_LogLinef("T13 async: state=%d r=%d rlen=%lu",
+                           (int)conn->hs13->state, (int)r,
+                           (unsigned long)conn->tls13_recv_len);
+        }
+
+        if (conn->hs13->state == kTLS13_Complete &&
+            conn->hs13->msg_offset >= conn->hs13->msg_len) {
+            conn->handshake_done = true;
+            conn->state = kOSTLSStateOpen;
+            conn->tls13_mode = kT13Mode_Open;
+            conn->cipher_suite = (UInt16)conn->hs13->cipher_suite;
+            OSTLS_LogLinef("T13 async: COMPLETE cipher=0x%04X",
+                           (unsigned)conn->cipher_suite);
+            event_bump(best_event, kOSTLSEventHandshakeDone);
+            return 1;
+        }
+        switch (r) {
+        case kTLS13_WantRead:
+            return pump_ot_recv_tls13(conn);
+        case kTLS13_WantWrite:
+        case kTLS13_OK:
+            return 1;
+        case kTLS13_Fallback12: {
+            OSTLSEvent ev = ostls_fallback_to_tls12(conn);
+            if (ev == kOSTLSEventFailed) *best_event = kOSTLSEventFailed;
+            return 1;
+        }
+        case kTLS13_Error:
+        default:
+            OSTLS_LogLinef("T13 async: ERROR br=%d state=%d",
+                           conn->hs13->error, (int)conn->hs13->state);
+            ostls_fail(conn, (OSErr)kOSTLSAsync_BearSSLError,
+                       noErr, conn->hs13->error);
+            *best_event = kOSTLSEventFailed;
+            return 1;
+        }
+    }
+
+    /* 4) Open / Closing: drive the record layer. */
+    if (conn->state == kOSTLSStateOpen ||
+        conn->state == kOSTLSStateClosing) {
+        /* Deliver staged plaintext before decrypting the next record
+         * (plain_buf is the decrypt target -- don't overwrite it). */
+        if (conn->t13_plain_off < conn->t13_plain_len) {
+            return pump_tls13_deliver_plain(conn, best_event);
+        }
+        if (conn->write_avail > 0 &&
+            conn->t13_send_off >= conn->t13_send_len) {
+            if (pump_tls13_build_send(conn)) return 1;
+        }
+        if (pump_tls13_consume_record(conn, best_event)) return 1;
+        if (!conn->peer_closed) {
+            int got = pump_ot_recv_tls13(conn);
+            if (got != 0) return got;
+        }
+        if (conn->peer_closed &&
+            conn->t13_plain_off >= conn->t13_plain_len &&
+            conn->tls13_recv_len < 5 &&
+            conn->state != kOSTLSStateClosed &&
+            conn->state != kOSTLSStateFailed) {
+            conn->state = kOSTLSStateClosed;
+            event_bump(best_event, kOSTLSEventClosed);
+            return 1;
+        }
+        return 0;
+    }
+
+    return 0;
+}
+
+
 /*
  * Advance BearSSL by exactly one record-pump step. Looks at the
  * engine state and does the single most-useful action available:
@@ -1266,7 +1806,12 @@ OSTLS_Pump(OSTLSConnection *conn, UInt32 max_steps, OSTLSEvent *out_event)
         if (conn->state == kOSTLSStateHandshaking ||
             conn->state == kOSTLSStateOpen ||
             conn->state == kOSTLSStateClosing) {
-            int did = pump_bearssl_step(conn, &best_event);
+            int did;
+            if (conn->tls13_mode != kT13Mode_Off) {
+                did = pump_tls13_step(conn, &best_event);
+            } else {
+                did = pump_bearssl_step(conn, &best_event);
+            }
             if (did <= 0) {
                 /* Nothing more to do this slice. */
                 break;
@@ -1403,6 +1948,18 @@ OSTLS_Close(OSTLSConnection *conn)
 
     if (conn->state == kOSTLSStateOpen ||
         conn->state == kOSTLSStateClosing) {
+        if (conn->tls13_mode == kT13Mode_Open) {
+            /* 1.3 path: BearSSL's engine isn't carrying this connection,
+             * so orderly-disconnect the transport. With HTTP
+             * "Connection: close" the peer FINs anyway; the subsequent
+             * Pumps observe the orderly release and reach Closed. */
+            if (conn->ep_open && conn->ep != NULL) {
+                OTSndOrderlyDisconnect(conn->ep);
+            }
+            conn->close_notify_sent = true;
+            conn->state = kOSTLSStateClosing;
+            return;
+        }
         if (!conn->close_notify_sent) {
             br_ssl_engine_close(&conn->sc.eng);
             conn->close_notify_sent = true;
@@ -1483,4 +2040,10 @@ OSTLS_GetUserRefcon(OSTLSConnection *conn)
 {
     if (conn == NULL || conn->disposed) return NULL;
     return conn->user_refcon;
+}
+
+void
+OSTLS_SetTryTLS13(int enabled)
+{
+    g_ostls_try_tls13 = enabled ? 1 : 0;
 }
