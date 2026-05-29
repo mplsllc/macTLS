@@ -57,7 +57,9 @@ Ported as `os9/ostls_tls13_handshake.{c,h}` (2331 lines, C89-clean). The host ha
 Wire the 1.3 path into macTLS's async pump and the version strategy. ClientHello advertises 1.2 suites alongside; on `Fallback12`, reset the connection and hand to the BearSSL T0 engine that's already there. This is where the new handshake meets `ostls_async.c`. New MacTLSTest probe that drives a 1.3 connection through the public API.
 **Gate:** Retro68 C89-clean, builds into MacTLSTest, no regression on the existing 1.2 stages.
 
-### Stage E — Hardware verification *(in progress)*
+### Stage E — Hardware verification *(MET — full 1.3 handshake on G3 over OT, 2026-05-29)*
+**Handshake completes on real PPC.** MacTLSTest Stage G drove a full TLS 1.3 handshake over Open Transport against mactrove.com on the G3: ClientHello → ServerHello → EncryptedExtensions → Certificate (validated vs the 121 anchors) → CertificateVerify → server Finished → our Finished, negotiating ChaCha20-Poly1305 (0x1303), `code=0`. The fix that got it there: non-blocking OT recv (blocking + a 32KB buffer stalled `OTRcv` ~60s waiting to fill instead of returning the available flight). What remains is the production wiring (Stage D) and app-data over the 1.3 record layer; the protocol itself is proven on hardware.
+
 **Crypto verified on G3 (2026-05-29):** MacTLSTest Stage F runs the key schedule + record layer against the RFC vectors plus tamper-reject on real PPC, all PASS, confirming the C89 port compiles under CodeWarrior 8 (not just Retro68) and the 64-bit record sequence number survives CW8 codegen. **Handshake-over-OT shipped (tfixes55, awaiting hardware run):** MacTLSTest Stage G (`ostls_tls13_otprobe.c`) drives the full handshake over Open Transport against mactrove.com, validated against the anchors. When that comes back complete on the G3, the milestone is met. Original gate text below.
 
 
