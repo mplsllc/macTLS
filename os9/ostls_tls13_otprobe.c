@@ -15,6 +15,7 @@
 #include "ostls_entropy.h"
 #include "ostls_time.h"
 #include "ostls_b3_anchors.h"
+#include "ostls_log.h"
 
 #include "bearssl_ssl.h"
 #include "bearssl_x509.h"
@@ -97,6 +98,7 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
     size_t recv_len;
     unsigned long deadline;
     int done, ok;
+    int dbg;
 
     if (out_cipher != NULL) *out_cipher = 0;
 
@@ -169,6 +171,7 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
     recv_len = 0;
     done = 0;
     ok = 0;
+    dbg = 0;
     deadline = TickCount() + (unsigned long)(60UL * 60UL);  /* 60s */
 
     while (!done) {
@@ -181,10 +184,21 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
 
         r = tls13_handshake_step(&gT13Hs, gT13Recv, &recv_len, server_name);
 
+        if (dbg < 24) {
+            OSTLS_LogLinef("  T13[%d] r=%d state=%d msglen=%lu off=%lu rlen=%lu",
+                           dbg, (int)r, (int)gT13Hs.state,
+                           (unsigned long)gT13Hs.msg_len,
+                           (unsigned long)gT13Hs.msg_offset,
+                           (unsigned long)recv_len);
+        }
+
         /* Flush any outgoing message fully before advancing. */
         while (gT13Hs.msg_offset < gT13Hs.msg_len) {
             OTResult sent = OTSnd(ep, gT13Hs.msg_buf + gT13Hs.msg_offset,
                                   (long)(gT13Hs.msg_len - gT13Hs.msg_offset), 0);
+            if (dbg < 24) {
+                OSTLS_LogLinef("  T13[%d] OTSnd sent=%ld", dbg, (long)sent);
+            }
             if (sent < 0) {
                 ot13_status(out_msg, out_msg_len, "T13: OTSnd FAIL", (long)sent);
                 done = 1;
@@ -212,6 +226,10 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
         } else if (r == kTLS13_WantRead) {
             OTResult got = OTRcv(ep, gT13Recv + recv_len,
                                  (long)(sizeof(gT13Recv) - recv_len), NULL);
+            if (dbg < 24) {
+                OSTLS_LogLinef("  T13[%d] OTRcv got=%ld rlen=%lu",
+                               dbg, (long)got, (unsigned long)recv_len);
+            }
             if (got > 0) {
                 recv_len += (size_t)got;
             } else if (got == kOTNoDataErr) {
@@ -223,6 +241,7 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
             }
         }
         /* WantWrite / OK: already flushed; loop. */
+        dbg++;
     }
 
     OTSndOrderlyDisconnect(ep);
