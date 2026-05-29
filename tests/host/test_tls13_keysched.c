@@ -124,6 +124,18 @@ static void test_handshake_secret(void)
         assert_bytes("Server handshake key", expected_skey, server_key, 16);
         assert_bytes("Server handshake IV", expected_siv, server_iv, 12);
     }
+
+    /* Client handshake key/iv from RFC 8448 -- this is the side we
+     * encrypt the client Finished with, and never verified before. */
+    {
+        unsigned char expected_ckey[16];
+        unsigned char expected_civ[12];
+        hex_to_bytes("dbfaa693d1762c5b666af5d950258d01",
+                     expected_ckey, 16);
+        hex_to_bytes("5bd3c71b836e0b76bb73265f", expected_civ, 12);
+        assert_bytes("Client handshake key", expected_ckey, client_key, 16);
+        assert_bytes("Client handshake IV", expected_civ, client_iv, 12);
+    }
 }
 
 int main(void)

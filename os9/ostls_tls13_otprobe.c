@@ -68,6 +68,8 @@ static br_x509_minimal_context gT13X509;
 static unsigned char           gT13IoBuf[BR_SSL_BUFSIZE_BIDI];
 static tls13_hs_ctx            gT13Hs;
 static unsigned char           gT13Recv[32768];
+static unsigned char           gT13Plain[16384];
+static unsigned char           gT13Wire[640];
 
 static void ot13_status(char *out, unsigned long cap, const char *msg, long code)
 {
@@ -76,6 +78,108 @@ static void ot13_status(char *out, unsigned long cap, const char *msg, long code
         sprintf(out, "%.100s (%ld)", msg, code);
     } else {
         sprintf(out, "%.120s", msg);
+    }
+}
+
+/*
+ * After the handshake, send an HTTP GET over the 1.3 record layer and
+ * read the response. The server may send NewSessionTicket records first
+ * (inner content type handshake); we decrypt every record to keep the
+ * read sequence aligned, skip the tickets, and capture the first
+ * application_data record (the HTTP response status line). Returns noErr
+ * on getting a response. rbuf/rlen hold any leftover handshake bytes.
+ */
+static OSErr ot13_appdata(EndpointRef ep, const char *server_name,
+                          unsigned char *rbuf, size_t rlen, size_t cap,
+                          char *out_msg, unsigned long out_msg_len)
+{
+    char get[256];
+    unsigned char ct[512];
+    size_t getlen, clen, plen;
+    uint8_t inner;
+    unsigned long deadline;
+
+    /* Build a minimal HTTP/1.1 GET. */
+    sprintf(get, "GET / HTTP/1.1\r\nHost: %.180s\r\nConnection: close\r\n\r\n",
+            server_name);
+    getlen = strlen(get);
+
+    clen = 0;
+    if (tls13_record_encrypt(&gT13Hs.write_ctx, get, getlen,
+                             TLS13_CT_APPLICATION_DATA, ct, &clen) != 0) {
+        ot13_status(out_msg, out_msg_len, "T13: app-data encrypt FAIL", 0);
+        return (OSErr)20;
+    }
+    gT13Wire[0] = 0x17; gT13Wire[1] = 0x03; gT13Wire[2] = 0x03;
+    gT13Wire[3] = (unsigned char)(clen >> 8);
+    gT13Wire[4] = (unsigned char)clen;
+    memcpy(gT13Wire + 5, ct, clen);
+
+    {
+        OTResult sent;
+        unsigned long off = 0;
+        while (off < 5 + clen) {
+            sent = OTSnd(ep, gT13Wire + off, (long)((5 + clen) - off), 0);
+            if (sent < 0) {
+                ot13_status(out_msg, out_msg_len, "T13: app-data OTSnd FAIL",
+                            (long)sent);
+                return (OSErr)21;
+            }
+            off += (unsigned long)sent;
+        }
+    }
+
+    deadline = TickCount() + (unsigned long)(30UL * 60UL);  /* 30s */
+    for (;;) {
+        while (rlen >= 5) {
+            size_t reclen = ((size_t)rbuf[3] << 8) | (size_t)rbuf[4];
+            int dr;
+            if (rlen < 5 + reclen) break;
+            plen = 0; inner = 0;
+            dr = tls13_record_decrypt(&gT13Hs.read_ctx, rbuf + 5, reclen,
+                                      gT13Plain, &plen, &inner);
+            memmove(rbuf, rbuf + 5 + reclen, rlen - (5 + reclen));
+            rlen -= (5 + reclen);
+            if (dr != 0) {
+                ot13_status(out_msg, out_msg_len, "T13: app-data decrypt FAIL", 0);
+                return (OSErr)22;
+            }
+            if (inner == TLS13_CT_APPLICATION_DATA) {
+                unsigned long n = (plen < 90UL) ? (unsigned long)plen : 90UL;
+                unsigned long i;
+                char snip[96];
+                for (i = 0; i < n; i++) {
+                    char c = (char)gT13Plain[i];
+                    snip[i] = (c == '\r' || c == '\n') ? ' ' : c;
+                }
+                snip[n] = '\0';
+                if (out_msg != NULL && out_msg_len > 0) {
+                    sprintf(out_msg, "T13: 1.3 HTTP OK: %.90s", snip);
+                }
+                return noErr;
+            } else if (inner == TLS13_CT_ALERT) {
+                ot13_status(out_msg, out_msg_len, "T13: app-data server ALERT",
+                            (long)((plen > 1) ? gT13Plain[1] : -1));
+                return (OSErr)23;
+            }
+            /* else handshake (NewSessionTicket / KeyUpdate): skip. */
+        }
+        if (TickCount() > deadline) {
+            ot13_status(out_msg, out_msg_len, "T13: app-data timeout", 0);
+            return (OSErr)24;
+        }
+        {
+            OTResult got = OTRcv(ep, rbuf + rlen, (long)(cap - rlen), NULL);
+            if (got > 0) {
+                rlen += (size_t)got;
+            } else if (got == kOTNoDataErr) {
+                /* poll again (deadline-bounded) */
+            } else {
+                ot13_status(out_msg, out_msg_len, "T13: app-data OTRcv FAIL",
+                            (long)got);
+                return (OSErr)25;
+            }
+        }
     }
 }
 
@@ -246,13 +350,21 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
         /* WantWrite / OK: already flushed; loop. */
     }
 
+    if (ok) {
+        OSErr ad_err;
+        if (out_cipher != NULL) *out_cipher = gT13Hs.cipher_suite;
+        /* Drive a real HTTP request/response over the 1.3 record layer.
+         * This is what actually exercises the client application keys --
+         * the handshake alone completes even with a broken app-key
+         * derivation, so app-data is the real end-to-end proof. */
+        ad_err = ot13_appdata(ep, server_name, gT13Recv, recv_len,
+                              sizeof(gT13Recv), out_msg, out_msg_len);
+        OTSndOrderlyDisconnect(ep);
+        OTCloseProvider(ep);
+        return ad_err;
+    }
+
     OTSndOrderlyDisconnect(ep);
     OTCloseProvider(ep);
-
-    if (ok) {
-        if (out_cipher != NULL) *out_cipher = gT13Hs.cipher_suite;
-        ot13_status(out_msg, out_msg_len, "T13: TLS 1.3 handshake OK", 0);
-        return noErr;
-    }
     return (OSErr)8;
 }

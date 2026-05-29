@@ -67,6 +67,94 @@ static const char *result_name(tls13_hs_result r)
     return "?";
 }
 
+/*
+ * After the handshake, send an HTTP GET over the 1.3 record layer and
+ * read the response. The server sends NewSessionTicket(s) first (inner
+ * content type handshake); we must decrypt every record in order to keep
+ * read_ctx's sequence number aligned, ignore the tickets, and capture the
+ * first application_data record (the HTTP response). Returns 0 on getting
+ * a response. rbuf holds rlen leftover bytes from the handshake.
+ */
+static int do_appdata(int fd, tls13_hs_ctx *hs, const char *host,
+                      unsigned char *rbuf, size_t rlen, size_t cap)
+{
+    char get[256];
+    unsigned char ct[512];
+    unsigned char wire[600];
+    static unsigned char plain[16384];
+    size_t getlen, clen = 0, plen = 0;
+    uint8_t inner = 0;
+    int glen;
+    time_t deadline;
+
+    glen = snprintf(get, sizeof get,
+        "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host);
+    getlen = (size_t)glen;
+
+    if (tls13_record_encrypt(&hs->write_ctx, get, getlen,
+            TLS13_CT_APPLICATION_DATA, ct, &clen) != 0) {
+        printf("FAIL: app-data encrypt\n");
+        return 1;
+    }
+    wire[0] = 0x17; wire[1] = 0x03; wire[2] = 0x03;
+    wire[3] = (unsigned char)(clen >> 8);
+    wire[4] = (unsigned char)clen;
+    memcpy(wire + 5, ct, clen);
+    if (send(fd, wire, 5 + clen, 0) <= 0) {
+        printf("FAIL: app-data send\n");
+        return 1;
+    }
+
+    deadline = time(NULL) + 15;
+    for (;;) {
+        while (rlen >= 5) {
+            size_t reclen = ((size_t)rbuf[3] << 8) | (size_t)rbuf[4];
+            int dr;
+            if (rlen < 5 + reclen) break;
+            dr = tls13_record_decrypt(&hs->read_ctx, rbuf + 5, reclen,
+                                      plain, &plen, &inner);
+            memmove(rbuf, rbuf + 5 + reclen, rlen - (5 + reclen));
+            rlen -= (5 + reclen);
+            if (dr != 0) {
+                printf("FAIL: app-data record decrypt failed\n");
+                return 1;
+            }
+            printf("  post-hs rec: inner=%d plen=%lu\n",
+                   (int)inner, (unsigned long)plen);
+            if (inner == TLS13_CT_APPLICATION_DATA) {
+                size_t i, n = plen < 60 ? plen : 60;
+                printf("PASS: HTTP response over TLS 1.3 (%lu bytes): ",
+                       (unsigned long)plen);
+                for (i = 0; i < n; i++) {
+                    char c = (char)plain[i];
+                    putchar((c == '\r' || c == '\n') ? ' ' : c);
+                }
+                printf("\n");
+                return 0;
+            } else if (inner == TLS13_CT_ALERT) {
+                printf("FAIL: server alert level=%d desc=%d (plen=%lu)\n",
+                       plen > 0 ? (int)plain[0] : -1,
+                       plen > 1 ? (int)plain[1] : -1,
+                       (unsigned long)plen);
+                return 1;
+            }
+            /* else handshake (NewSessionTicket / KeyUpdate): ignore. */
+        }
+        if (time(NULL) > deadline) {
+            printf("FAIL: app-data timeout (no response record)\n");
+            return 1;
+        }
+        {
+            ssize_t n = recv(fd, rbuf + rlen, cap - rlen, 0);
+            if (n <= 0) {
+                printf("FAIL: app-data recv (n=%ld)\n", (long)n);
+                return 1;
+            }
+            rlen += (size_t)n;
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *host = (argc > 1) ? argv[1] : "mactrove.com";
@@ -169,14 +257,16 @@ int main(int argc, char **argv)
         }
     }
 
-    close(fd);
-
     if (ok) {
+        int ad;
         printf("PASS: TLS 1.3 handshake complete in %d steps\n", steps);
         printf("  is_tls13=%d  cipher_suite=0x%04X\n",
                hs.is_tls13, (unsigned)hs.cipher_suite);
-        return (hs.is_tls13 && hs.state == kTLS13_Complete) ? 0 : 1;
+        ad = do_appdata(fd, &hs, host, recv_buf, recv_len, sizeof recv_buf);
+        close(fd);
+        return (hs.is_tls13 && hs.state == kTLS13_Complete && ad == 0) ? 0 : 1;
     }
+    close(fd);
     printf("RESULT: handshake did not complete (last result above)\n");
     return 1;
 }

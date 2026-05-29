@@ -63,17 +63,22 @@ static void hkdf_expand_label(
         br_hmac_key_context kc;
         br_hmac_context mc;
         unsigned char one = 0x01;
+        unsigned char tmp[64];  /* holds full HMAC output (SHA-256=32, SHA-384=48) */
 
         br_hmac_key_init(&kc, hash, secret, secret_len);
         br_hmac_init(&mc, &kc, 0);
         br_hmac_update(&mc, info, info_len);
         br_hmac_update(&mc, &one, 1);
-        br_hmac_out(&mc, out);
 
-        /* br_hmac_out writes hash_len bytes; for TLS 1.3 out_len is
-         * always hash_len (secrets) or key_len/iv_len (traffic keys),
-         * and the caller's buffer is sized for what it asked for. */
-        (void)out_len;
+        /* br_hmac_out ALWAYS writes hash_len bytes. out_len is often
+         * smaller than hash_len (e.g. a 12-byte IV from a 32-byte hash),
+         * so we must NOT write straight into the caller's buffer -- doing
+         * so overflows it by (hash_len - out_len) bytes and corrupts
+         * adjacent key material. Write the full digest into a scratch
+         * buffer, then copy exactly out_len bytes. TLS 1.3 only ever
+         * expands to <= hash_len (single HMAC block, no T(2)). */
+        br_hmac_out(&mc, tmp);
+        memcpy(out, tmp, out_len);
     }
 }
 
