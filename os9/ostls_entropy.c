@@ -37,6 +37,18 @@
 #include "bearssl_hash.h"
 #include "ostls_log.h"
 
+/* Forward declarations for the exported API. CW8's flat-folder access
+ * paths may not have macTLS/os9 explicitly listed, so the #include above
+ * can silently miss and leave the in-file pool_ensure_init→OSTLS_LoadSeed
+ * call at implicit-int, conflicting with the later void(void) definition.
+ * Declaring locally guarantees the prototype is in scope before first use. */
+void OSTLS_LoadSeed(void);
+void OSTLS_SaveSeed(void);
+void OSTLS_StirTimer(unsigned long hint);
+void OSTLS_StirEntropy(const void *data, unsigned long len);
+void OSTLS_CollectEntropy(void);
+unsigned long OSTLS_EntropySampleCount(void);
+
 #ifdef __MWERKS__
 #include <Types.h>
 #include <Events.h>
