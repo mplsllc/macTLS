@@ -613,6 +613,7 @@ ostls_setup_bearssl(OSTLSConnection *conn)
     OSErr time_err;
     int entropy_err;
     int reset_ok;
+    int resume_session = 0;
 
     /* Re-read the clock; the user could have ticked over midnight
      * between Start and the first handshake step (unlikely on a
@@ -638,9 +639,12 @@ ostls_setup_bearssl(OSTLSConnection *conn)
                              conn->ssl_iobuf,
                              sizeof conn->ssl_iobuf, 1);
 
-    /* fixes254 — TLS session resumption. If we cached params from a
-     * prior successful handshake to this host:port, inject them now
-     * so the upcoming ClientHello carries the session ID. */
+    /* TLS session resumption. If we cached params from a prior handshake
+     * to this host:port, inject them AND set resume_session so
+     * br_ssl_client_reset actually attempts the abbreviated handshake.
+     * The resume flag has to be non-zero or BearSSL ignores the injected
+     * session and does a full handshake every time (the original
+     * fixes254 bug: it injected the session but passed 0 here). */
     {
         char key[OSTLS_SESS_KEY_LEN];
         br_ssl_session_parameters cached;
@@ -648,10 +652,13 @@ ostls_setup_bearssl(OSTLSConnection *conn)
         if (sess_cache_get(key, &cached)) {
             br_ssl_engine_set_session_parameters(
                 &conn->sc.eng, &cached);
+            resume_session = 1;
+            OSTLS_LogLinef("macTLS resume: offering cached session %s", key);
         }
     }
 
-    reset_ok = br_ssl_client_reset(&conn->sc, conn->server_name, 0);
+    reset_ok = br_ssl_client_reset(&conn->sc, conn->server_name,
+                                   resume_session);
     if (reset_ok == 0) {
         int br_err = br_ssl_engine_last_error(&conn->sc.eng);
         return ostls_fail(conn, (OSErr)kOSTLSAsync_ClientResetFail,
@@ -1119,6 +1126,8 @@ pump_bearssl_step(OSTLSConnection *conn, OSTLSEvent *best_event)
             char key[OSTLS_SESS_KEY_LEN];
             sess_cache_make_key(conn, key, sizeof key);
             sess_cache_put(key, sess);
+            OSTLS_LogLinef("macTLS resume: cached session %s (suite 0x%04X)",
+                           key, (unsigned)conn->cipher_suite);
         }
         event_bump(best_event, kOSTLSEventHandshakeDone);
         return 1;

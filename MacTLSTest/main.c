@@ -400,6 +400,75 @@ ostls_ot_close(void)
 }
 
 
+/*
+ * Stage D3 helper: one async connect + handshake to host:port, then
+ * close. Returns the bytes received during the handshake (0 on failure).
+ * A full handshake pulls the server cert chain (several KB); a resumed
+ * one skips it, so a much smaller number on a repeat connect to the same
+ * host is the signal that session resumption kicked in.
+ */
+static UInt32
+d3_handshake_recv(const char *host, UInt16 port, const char *sni)
+{
+    OSTLSConnection *conn;
+    OSTLSConfig      cfg;
+    OSTLSEvent       ev;
+    OSTLSState       st;
+    OSTLSDiagnostics diag;
+    OSErr            err;
+    UInt32           deadline;
+    UInt32           recv_bytes;
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.host = host;
+    cfg.port = port;
+    cfg.server_name = sni;
+
+    conn = NULL;
+    if (OSTLS_New(&conn, &cfg) != kOSTLSAsync_OK || conn == NULL) {
+        return 0;
+    }
+    if (OSTLS_Start(conn) != kOSTLSAsync_OK) {
+        OSTLS_Dispose(conn);
+        return 0;
+    }
+
+    recv_bytes = 0;
+    deadline = (UInt32)TickCount() + 60UL * 60UL;   /* 60s */
+    for (;;) {
+        if ((UInt32)TickCount() > deadline) {
+            OSTLS_Close(conn);
+            OSTLS_Dispose(conn);
+            return 0;
+        }
+        err = OSTLS_Pump(conn, 6, &ev);
+        {
+            EventRecord nullev;
+            WaitNextEvent(everyEvent, &nullev, 1, NULL);
+        }
+        if (err != kOSTLSAsync_OK) {
+            OSTLS_Close(conn);
+            OSTLS_Dispose(conn);
+            return 0;
+        }
+        st = OSTLS_GetState(conn);
+        if (st == kOSTLSStateFailed) {
+            OSTLS_Dispose(conn);
+            return 0;
+        }
+        if (st == kOSTLSStateOpen) {
+            OSTLS_GetDiagnostics(conn, &diag);
+            recv_bytes = diag.ot_recv_bytes;
+            break;
+        }
+    }
+
+    OSTLS_Close(conn);
+    OSTLS_Dispose(conn);
+    return recv_bytes;
+}
+
+
 int
 main(void)
 {
@@ -994,6 +1063,33 @@ main(void)
                        (int)d2_err, (long)diag.ot_err, (int)diag.br_err);
     }
     d2_done: ;
+    }
+
+    /*
+     * Stage D3: TLS session resumption. Connect to www.google.com twice
+     * (a different cache key than D2's google.com, so the cache starts
+     * empty for it). The first handshake is full and pulls the cert
+     * chain; the second should be abbreviated if resumption works, which
+     * shows up as far fewer bytes received during the handshake. Look for
+     * the 'macTLS resume: cached session' / 'offering cached session'
+     * lines in the log too.
+     */
+    {
+        UInt32 r1, r2;
+        OSTLS_LogLine("Stage D3   session resumption (2x www.google.com) ...");
+        r1 = d3_handshake_recv("www.google.com", 443, "www.google.com");
+        r2 = d3_handshake_recv("www.google.com", 443, "www.google.com");
+        OSTLS_LogLinef("Stage D3   connect 1 handshake recv=%lu bytes (full)",
+                       (unsigned long)r1);
+        OSTLS_LogLinef("Stage D3   connect 2 handshake recv=%lu bytes (resume?)",
+                       (unsigned long)r2);
+        if (r1 > 0 && r2 > 0 && r2 < (r1 / 2)) {
+            OSTLS_LogLine("Stage D3   session resumption    -> PASS (2nd handshake abbreviated)");
+        } else if (r1 > 0 && r2 > 0) {
+            OSTLS_LogLine("Stage D3   session resumption    -> NO RESUME (server declined or full handshake)");
+        } else {
+            OSTLS_LogLine("Stage D3   session resumption    -> FAIL (connect error)");
+        }
     }
 
     show_result_and_wait(title_buf, line1_buf, line2_buf);
