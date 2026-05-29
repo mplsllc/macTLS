@@ -8,6 +8,7 @@
  */
 
 #include "ostls_tls13_handshake.h"
+#include "ostls_entropy.h"
 #include <string.h>
 
 /* ── Wire Format Helpers ── */
@@ -205,9 +206,13 @@ static const uint16_t tls12_cipher_suites[] = {
  * ChaCha20 first for PPC performance.
  */
 static const uint16_t tls13_cipher_suites[] = {
+    /* SHA-256 suites only. We deliberately do NOT offer
+     * TLS_AES_256_GCM_SHA384 (0x1302): the transcript hash is SHA-256 and
+     * the SHA-384 re-hash path is a stub, so offering it would let a
+     * server pick a suite we'd then reject. Per TLS13_SCOPE.md this build
+     * is SHA-256 only. */
     TLS13_CHACHA20_POLY1305_SHA256,  /* 0x1303 */
-    TLS13_AES_128_GCM_SHA256,       /* 0x1301 */
-    TLS13_AES_256_GCM_SHA384,       /* 0x1302 */
+    TLS13_AES_128_GCM_SHA256        /* 0x1301 */
 };
 
 /*
@@ -2188,7 +2193,7 @@ static tls13_hs_result tls13_state_send_client_hello(tls13_hs_ctx *hs,
          * entropy_seed_engine() injects pool data into the engine's
          * HMAC_DRBG.
          */
-        entropy_seed_engine(eng);
+        (void)OSTLS_InjectEntropy(eng);
         br_hmac_drbg_generate(&eng->rng, seed, sizeof(seed));
     }
 

@@ -13,11 +13,31 @@ CFLAGS  = -std=c99 -Wall -I$(BEARSSL)/inc -I$(BEARSSL)/src
 BSSL    = $(wildcard $(BEARSSL)/src/hash/*.c $(BEARSSL)/src/mac/*.c \
                      $(BEARSSL)/src/codec/*.c $(BEARSSL)/src/symcipher/*.c \
                      $(BEARSSL)/src/aead/*.c $(BEARSSL)/src/int/*.c)
+# Full BearSSL (adds ec/rsa/ssl/x509/kdf/rand) for the handshake test.
+BSSL_ALL = $(shell find $(BEARSSL)/src -name '*.c')
+
+OS9 = ../../os9
 
 TESTS = test_tls13_keysched test_tls13_record
 
+# Offline crypto tests against known vectors.
 test: $(TESTS)
 	@for t in $(TESTS); do echo "--- $$t ---"; ./$$t || exit 1; done
+
+# Live TLS 1.3 handshake against a real server. Needs network.
+#   make handshake            (defaults to mactrove.com)
+#   make handshake HOST=google.com
+HOST ?= mactrove.com
+handshake: test_tls13_handshake
+	./test_tls13_handshake $(HOST) 443
+
+test_tls13_handshake: test_tls13_handshake.c
+	$(CC) -D_GNU_SOURCE $(CFLAGS) -Wno-pointer-sign \
+	  test_tls13_handshake.c \
+	  $(OS9)/ostls_tls13_handshake.c $(OS9)/ostls_tls13_keysched.c \
+	  $(OS9)/ostls_tls13_record.c $(OS9)/ostls_entropy.c \
+	  $(OS9)/ostls_log.c $(OS9)/ostls_b3_anchors.c \
+	  $(BSSL_ALL) -o $@
 
 test_tls13_keysched: test_tls13_keysched.c ../../os9/ostls_tls13_keysched.c
 	$(CC) $(CFLAGS) test_tls13_keysched.c ../../os9/ostls_tls13_keysched.c $(BSSL) -o $@
@@ -26,6 +46,6 @@ test_tls13_record: test_tls13_record.c ../../os9/ostls_tls13_record.c
 	$(CC) $(CFLAGS) test_tls13_record.c ../../os9/ostls_tls13_record.c $(BSSL) -o $@
 
 clean:
-	rm -f $(TESTS)
+	rm -f $(TESTS) test_tls13_handshake
 
-.PHONY: test clean
+.PHONY: test handshake clean
