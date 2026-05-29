@@ -128,11 +128,41 @@ static void test_rejects(void)
           tls13_parse_new_session_ticket(&hs, bad, sizeof bad, &t) == -1);
 }
 
+/* PSK binder computation (macTLS#2 Stage C2). Drives tls13_compute_binder
+ * with an empty base transcript and a fixed 50-byte "truncated ClientHello"
+ * so binder = HMAC(finished_key, SHA-256(truncated)); pinned against an
+ * independent HKDF reference (psk = 0x04*32). */
+static void test_binder(void)
+{
+    tls13_keysched ks;
+    tls13_transcript base;
+    unsigned char psk[32];
+    unsigned char trunc[50];
+    unsigned char binder[32];
+    unsigned char expected[32];
+    int i;
+
+    memset(psk, 0x04, sizeof psk);
+    for (i = 0; i < 50; i++) trunc[i] = (unsigned char)(i + 1);
+
+    tls13_ks_init(&ks, &br_sha256_vtable);
+    tls13_transcript_init(&base, &br_sha256_vtable);   /* empty base */
+
+    tls13_compute_binder(&ks, psk, 32, &base, trunc, sizeof trunc, binder);
+
+    hex_to_bytes(
+        "3e85d371f1b161430a3ea4b9d60ed6e2"
+        "20a4a3963d00b050c92dd56277e16ff1",
+        expected, 32);
+    assert_bytes("PSK binder", expected, binder, 32);
+}
+
 int main(void)
 {
     printf("=== TLS 1.3 NewSessionTicket Parse Tests (macTLS) ===\n\n");
     test_parse_ok();
     test_rejects();
+    test_binder();
     printf("\n%d test(s) failed.\n", failures);
     return failures > 0 ? 1 : 0;
 }

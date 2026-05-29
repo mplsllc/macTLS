@@ -84,12 +84,14 @@ Split in two: **C1 binder key schedule (DONE, host KAT 2026-05-29)** —
 `tls13_ks_derive_binder_key` ("res binder") in [ostls_tls13_keysched.c];
 binder finished key reuses `tls13_ks_derive_finished_key`. KAT in
 `test_binder_key` pins Early/binder_key/finished_key vs an HKDF reference.
-**C2 ClientHello assembly (TODO)** — add `psk_key_exchange_modes(psk_dhe_ke)`
-and `pre_shared_key` (last extension): identity = ticket +
-obfuscated_ticket_age; binder = HMAC(finished_key, Transcript-Hash(ClientHello
-**without** the binders)). The transcript-truncation (hash everything up to
-the binders, length fields still counting them) + binder patch-in is the
-fiddly part; verify end-to-end against a real server at Stage D/E.
+**C2 ClientHello assembly (DONE, host test 2026-05-29):** when `hs->resuming`
++ `offer_ticket` are set, the builder appends `psk_key_exchange_modes(psk_dhe_ke)`
+then `pre_shared_key` last (identity = ticket + obfuscated_ticket_age, binder
+placeholder), backpatches all length fields to count the binders, then patches
+the binder via `tls13_compute_binder` over the message truncated before the
+binders (continuing the running transcript so HRR works). `tls13_compute_binder`
+has a host KAT in test_tls13_ticket.c (vs HKDF reference). The byte-assembly's
+true gate is a server accepting the binder — verified end-to-end at Stage E.
 
 ### Stage D — Resumed key schedule + accept/reject
 Early Secret = `HKDF-Extract(0, res_psk)` (not zeros); derive binder_key. If

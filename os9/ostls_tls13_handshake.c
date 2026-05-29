@@ -267,6 +267,48 @@ static const uint16_t sig_algorithms[] = {
  *
  * Returns 0 on success, -1 if the message doesn't fit in msg_buf.
  */
+/*
+ * Compute a PSK binder (macTLS#2 Stage C2). See header. Uses private
+ * copies of the transcript and key schedule so the caller's running
+ * state is untouched -- the binder is auxiliary, derived purely from the
+ * resumption PSK and the binder-less ClientHello prefix.
+ */
+void tls13_compute_binder(const tls13_keysched *ks,
+                          const unsigned char *psk, size_t psk_len,
+                          const tls13_transcript *base,
+                          const unsigned char *truncated_ch, size_t trunc_len,
+                          unsigned char *out_binder)
+{
+    tls13_keysched bks;
+    tls13_transcript tmp;
+    unsigned char binder_key[64];
+    unsigned char finished_key[64];
+    unsigned char binder_hash[64];
+    br_hmac_key_context hk;
+    br_hmac_context hc;
+
+    /* Transcript-Hash(truncated ClientHello), continuing from base. */
+    tmp = *base;
+    tls13_transcript_update(&tmp, truncated_ch, trunc_len);
+    tls13_transcript_snapshot(&tmp, binder_hash);
+
+    /* Early Secret from the PSK -> binder_key ("res binder") -> finished. */
+    bks = *ks;
+    tls13_ks_extract_early_psk(&bks, psk, psk_len);
+    tls13_ks_derive_binder_key(&bks, binder_key);
+    tls13_ks_derive_finished_key(&bks, binder_key, finished_key);
+
+    /* binder = HMAC(finished_key, binder_hash); writes hash_len bytes. */
+    br_hmac_key_init(&hk, bks.hash, finished_key, bks.hash_len);
+    br_hmac_init(&hc, &hk, 0);
+    br_hmac_update(&hc, binder_hash, bks.hash_len);
+    br_hmac_out(&hc, out_binder);
+
+    secure_wipe(binder_key, sizeof binder_key);
+    secure_wipe(finished_key, sizeof finished_key);
+    secure_wipe(binder_hash, sizeof binder_hash);
+}
+
 static int tls13_build_client_hello(tls13_hs_ctx *hs,
                                     const char *hostname,
                                     br_hmac_drbg_context *rng)
@@ -514,6 +556,65 @@ static int tls13_build_client_hello(tls13_hs_ctx *hs,
         pos += 2;
         memcpy(buf + pos, hs->cookie, hs->cookie_len);
         pos += hs->cookie_len;
+    }
+
+    /* ── Resumption extensions (macTLS#2 Stage C2) ──
+     * psk_key_exchange_modes (45) then pre_shared_key (41), which MUST be
+     * the final extension. The binder is HMAC'd over the transcript of
+     * this ClientHello truncated just before the binders, with every
+     * length field still counting the binders (RFC 8446 4.2.11.2). */
+    if (hs->resuming && hs->offer_ticket != NULL &&
+        hs->offer_ticket->psk_len > 0) {
+        const tls13_session_ticket *tk = hs->offer_ticket;
+        size_t id_len = tk->ticket_len;
+        size_t blen = hs->ks.hash_len;            /* binder length = hash_len */
+        size_t identities_block = 2 + id_len + 4; /* one identity entry */
+        size_t binders_block = 1 + blen;          /* one binder entry */
+        size_t psk_ext_data = 2 + identities_block + 2 + binders_block;
+        size_t binders_section = 2 + binders_block; /* binders list len + entry */
+        size_t binder_off;
+
+        /* psk_key_exchange_modes: ext(2) + len(2) + modes_len(1) + mode(1) */
+        if (pos + 6 > buf_size) return -1;
+        put_u16(buf + pos, TLS13_EXT_PSK_KEY_EXCHANGE_MODES); pos += 2;
+        put_u16(buf + pos, 2); pos += 2;
+        buf[pos++] = 1;                           /* psk_ke_modes length */
+        buf[pos++] = 1;                           /* psk_dhe_ke */
+
+        /* pre_shared_key (last). */
+        if (pos + 4 + psk_ext_data > buf_size) return -1;
+        put_u16(buf + pos, TLS13_EXT_PRE_SHARED_KEY); pos += 2;
+        put_u16(buf + pos, (uint16_t)psk_ext_data); pos += 2;
+        put_u16(buf + pos, (uint16_t)identities_block); pos += 2;
+        put_u16(buf + pos, (uint16_t)id_len); pos += 2;
+        memcpy(buf + pos, tk->ticket, id_len); pos += id_len;
+        buf[pos++] = (unsigned char)(hs->offer_obfuscated_age >> 24);
+        buf[pos++] = (unsigned char)(hs->offer_obfuscated_age >> 16);
+        buf[pos++] = (unsigned char)(hs->offer_obfuscated_age >> 8);
+        buf[pos++] = (unsigned char)(hs->offer_obfuscated_age);
+        put_u16(buf + pos, (uint16_t)binders_block); pos += 2;
+        binder_off = pos + 1;                     /* after the binder_len byte */
+        buf[pos++] = (unsigned char)blen;
+        memset(buf + pos, 0, blen);               /* binder placeholder */
+        pos += blen;
+
+        /* Backpatch lengths NOW — they count the binders. */
+        put_u16(buf + ext_len_pos, (uint16_t)(pos - ext_start));
+        put_u24(buf + hs_len_pos, (uint32_t)(pos - hs_len_pos - 3));
+        put_u16(buf + 3, (uint16_t)(pos - 5));
+
+        /* Binder over the message truncated before the binders, continuing
+         * the running transcript (handles HRR: CH1 + HRR already hashed). */
+        tls13_compute_binder(&hs->ks, tk->psk, tk->psk_len,
+                             &hs->transcript,
+                             buf + 5, (pos - 5) - binders_section,
+                             buf + binder_off);
+
+        hs->msg_len = pos;
+        hs->msg_offset = 0;
+        /* Now feed the FULL ClientHello (real binder) into the transcript. */
+        tls13_transcript_update(&hs->transcript, buf + 5, pos - 5);
+        return 0;
     }
 
     /*

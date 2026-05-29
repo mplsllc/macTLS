@@ -36,8 +36,10 @@
 #define TLS13_EXT_SERVER_NAME           0
 #define TLS13_EXT_SUPPORTED_GROUPS     10
 #define TLS13_EXT_SIGNATURE_ALGORITHMS 13
+#define TLS13_EXT_PRE_SHARED_KEY       41
 #define TLS13_EXT_SUPPORTED_VERSIONS   43
 #define TLS13_EXT_COOKIE               44
+#define TLS13_EXT_PSK_KEY_EXCHANGE_MODES 45
 #define TLS13_EXT_KEY_SHARE            51
 
 /* Signature schemes */
@@ -211,6 +213,14 @@ typedef struct {
     int                   res_master_valid;
     tls13_session_ticket  ticket;
     int                   ticket_valid;
+
+    /* Outbound resumption (macTLS#2 Stage C2): when `resuming` is set the
+     * cache layer points offer_ticket at a live cached ticket and supplies
+     * the obfuscated_ticket_age; the ClientHello then carries
+     * psk_key_exchange_modes + pre_shared_key with a computed binder. */
+    int                          resuming;
+    const tls13_session_ticket  *offer_ticket;
+    uint32_t                     offer_obfuscated_age;
 } tls13_hs_ctx;
 
 /*
@@ -246,5 +256,17 @@ tls13_hs_result tls13_handle_post_handshake(tls13_hs_ctx *hs,
 int tls13_parse_new_session_ticket(tls13_hs_ctx *hs,
                                     const unsigned char *msg, size_t msg_len,
                                     tls13_session_ticket *out);
+
+/* Compute a PSK binder (macTLS#2 Stage C2). Clones `base` (the running
+ * transcript, so the HRR case with CH1+HRR already hashed works), feeds
+ * the truncated ClientHello bytes (handshake message through the PSK
+ * identities, WITHOUT the binders), snapshots, then HMACs that with the
+ * finished key derived from the resumption PSK via the "res binder" path.
+ * Writes ks->hash_len bytes to out_binder. */
+void tls13_compute_binder(const tls13_keysched *ks,
+                          const unsigned char *psk, size_t psk_len,
+                          const tls13_transcript *base,
+                          const unsigned char *truncated_ch, size_t trunc_len,
+                          unsigned char *out_binder);
 
 #endif /* OSTLS_TLS13_HANDSHAKE_H */
