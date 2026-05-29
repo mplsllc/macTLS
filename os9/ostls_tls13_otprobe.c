@@ -182,6 +182,10 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
             break;
         }
 
+        if (dbg < 40) {
+            OSTLS_LogLinef("  T13[%d] PRE-step rlen=%lu state=%d",
+                           dbg, (unsigned long)recv_len, (int)gT13Hs.state);
+        }
         r = tls13_handshake_step(&gT13Hs, gT13Recv, &recv_len, server_name);
 
         if (dbg < 24) {
@@ -231,6 +235,15 @@ OSErr OSTLS_TLS13_OTProbe(const char *target_host_port,
                                dbg, (long)got, (unsigned long)recv_len);
             }
             if (got > 0) {
+                if (dbg < 40) {
+                    OSTLS_LogLinef("  T13[%d] recv[0..4]=%02X %02X %02X %02X %02X",
+                                   dbg,
+                                   (unsigned)gT13Recv[recv_len + 0],
+                                   (unsigned)gT13Recv[recv_len + 1],
+                                   (unsigned)gT13Recv[recv_len + 2],
+                                   (unsigned)gT13Recv[recv_len + 3],
+                                   (unsigned)gT13Recv[recv_len + 4]);
+                }
                 recv_len += (size_t)got;
             } else if (got == kOTNoDataErr) {
                 /* blocking should not hit this; loop (deadline bounds it) */
