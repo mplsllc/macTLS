@@ -103,12 +103,24 @@ Certificate/CertificateVerify. When the server declines (no echo) everything
 falls through to the existing full-handshake path untouched. C89-clean, full
 host suite still green; correctness proven by the live resume at Stage E.
 
-### Stage E — Ticket cache + async integration
-Build the host-keyed RAM cache (fixed slot table, LRU, lifetime expiry; takes
-an explicit `now` so it's host-testable) and wire it into
-OSTLSConnection/global: harvest `hs->ticket` on NewSessionTicket, consult on
-OSTLS_Start to decide full vs resumed. Host-verify a real resume (openssl
-s_server issuing tickets, then a live site).
+### Stage E — Live resume gate + ticket cache + async integration
+**E1 live resume gate (DONE, 2026-05-30):** `tests/host/test_tls13_resume.c`
+does two connections to a real server (`make resume RHOST=68kmla.org`):
+conn1 full handshake, capture a NewSessionTicket via the post-handshake
+handler; conn2 resumes. **Verified against 68kmla.org:** server echoes
+`pre_shared_key` (binder accepted), the resumed handshake reaches Complete
+with the certificate skipped, and an HTTP response flows over resumed keys.
+ASan/MSan/UBSan all complete the full resume clean. Two real fixes fell out:
+(a) `psk_key_exchange_modes` is now sent on EVERY ClientHello — servers won't
+issue tickets without it (RFC 8446 4.2.9), so we never received one before;
+(b) the CH binder uses a keysched keyed to the ticket's hash (`hs->ks` isn't
+set up until ServerHello — using it crashed on a NULL hash). Note: servers
+that don't ticket these connections (Cloudflare/Google/nginx-without-tickets)
+SKIP cleanly; 68kmla (XenForo) tickets reliably.
+**E2 cache + async wiring (TODO):** build the host-keyed RAM cache (fixed
+slots, LRU, lifetime expiry, explicit `now` for host testing) and wire it
+into `ostls_async.c` — harvest `hs13->ticket` on NewSessionTicket, consult on
+OSTLS_Start to decide full vs resumed. This is the part that ships to the Mac.
 
 ### Stage F — Hardware verification *(gate)*
 On the G3, time full vs resumed handshake to a real ticketing server. Accept

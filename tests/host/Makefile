@@ -31,6 +31,21 @@ HOST ?= mactrove.com
 handshake: test_tls13_handshake
 	./test_tls13_handshake $(HOST) 443
 
+# Live TLS 1.3 session resumption (two connections). Needs network.
+#   make resume                 (defaults to cloudflare.com)
+#   make resume RHOST=google.com
+RHOST ?= cloudflare.com
+resume: test_tls13_resume
+	./test_tls13_resume $(RHOST) 443
+
+test_tls13_resume: test_tls13_resume.c
+	$(CC) -D_GNU_SOURCE $(CFLAGS) -Wno-pointer-sign \
+	  test_tls13_resume.c \
+	  $(OS9)/ostls_tls13_handshake.c $(OS9)/ostls_tls13_keysched.c \
+	  $(OS9)/ostls_tls13_record.c $(OS9)/ostls_entropy.c \
+	  $(OS9)/ostls_log.c $(OS9)/ostls_b3_anchors.c \
+	  $(BSSL_ALL) -o $@
+
 test_tls13_handshake: test_tls13_handshake.c
 	$(CC) -D_GNU_SOURCE $(CFLAGS) -Wno-pointer-sign \
 	  test_tls13_handshake.c \
@@ -56,6 +71,6 @@ test_tls13_ticket: test_tls13_ticket.c
 	  $(BSSL_ALL) -o $@
 
 clean:
-	rm -f $(TESTS) test_tls13_handshake
+	rm -f $(TESTS) test_tls13_handshake test_tls13_resume
 
 .PHONY: test handshake clean

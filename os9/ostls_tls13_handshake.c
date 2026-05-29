@@ -558,30 +558,38 @@ static int tls13_build_client_hello(tls13_hs_ctx *hs,
         pos += hs->cookie_len;
     }
 
-    /* ── Resumption extensions (macTLS#2 Stage C2) ──
-     * psk_key_exchange_modes (45) then pre_shared_key (41), which MUST be
-     * the final extension. The binder is HMAC'd over the transcript of
-     * this ClientHello truncated just before the binders, with every
+    /* ── Extension: psk_key_exchange_modes — type 45 ──
+     * Sent on EVERY ClientHello (macTLS#2 Stage E fix): a server will not
+     * issue NewSessionTicket unless the client advertised PSK support via
+     * this extension (RFC 8446 4.2.9). Without it we'd never receive a
+     * ticket to resume with. Value: single mode psk_dhe_ke (1). */
+    if (pos + 6 > buf_size) return -1;
+    put_u16(buf + pos, TLS13_EXT_PSK_KEY_EXCHANGE_MODES); pos += 2;
+    put_u16(buf + pos, 2); pos += 2;
+    buf[pos++] = 1;                               /* psk_ke_modes length */
+    buf[pos++] = 1;                               /* psk_dhe_ke */
+
+    /* ── Extension: pre_shared_key — type 41 (resumption only) ──
+     * MUST be the final extension. The binder is HMAC'd over the transcript
+     * of this ClientHello truncated just before the binders, with every
      * length field still counting the binders (RFC 8446 4.2.11.2). */
     if (hs->resuming && hs->offer_ticket != NULL &&
-        hs->offer_ticket->psk_len > 0) {
+        hs->offer_ticket->psk_len == hs->transcript.hash_len) {
         const tls13_session_ticket *tk = hs->offer_ticket;
         size_t id_len = tk->ticket_len;
-        size_t blen = hs->ks.hash_len;            /* binder length = hash_len */
+        size_t blen = tk->psk_len;                /* binder length = PSK hash_len */
         size_t identities_block = 2 + id_len + 4; /* one identity entry */
         size_t binders_block = 1 + blen;          /* one binder entry */
         size_t psk_ext_data = 2 + identities_block + 2 + binders_block;
         size_t binders_section = 2 + binders_block; /* binders list len + entry */
         size_t binder_off;
+        /* hs->ks isn't set up until ServerHello, so the binder uses a
+         * keysched keyed to the TICKET's hash (matched to the transcript
+         * hash above; v1 is SHA-256). */
+        tls13_keysched binder_ks;
+        const br_hash_class *psk_hash =
+            (blen == 48) ? &br_sha384_vtable : &br_sha256_vtable;
 
-        /* psk_key_exchange_modes: ext(2) + len(2) + modes_len(1) + mode(1) */
-        if (pos + 6 > buf_size) return -1;
-        put_u16(buf + pos, TLS13_EXT_PSK_KEY_EXCHANGE_MODES); pos += 2;
-        put_u16(buf + pos, 2); pos += 2;
-        buf[pos++] = 1;                           /* psk_ke_modes length */
-        buf[pos++] = 1;                           /* psk_dhe_ke */
-
-        /* pre_shared_key (last). */
         if (pos + 4 + psk_ext_data > buf_size) return -1;
         put_u16(buf + pos, TLS13_EXT_PRE_SHARED_KEY); pos += 2;
         put_u16(buf + pos, (uint16_t)psk_ext_data); pos += 2;
@@ -604,8 +612,10 @@ static int tls13_build_client_hello(tls13_hs_ctx *hs,
         put_u16(buf + 3, (uint16_t)(pos - 5));
 
         /* Binder over the message truncated before the binders, continuing
-         * the running transcript (handles HRR: CH1 + HRR already hashed). */
-        tls13_compute_binder(&hs->ks, tk->psk, tk->psk_len,
+         * the running transcript (handles HRR: CH1 + HRR already hashed).
+         * binder_ks is keyed to the ticket's hash (hs->ks not ready yet). */
+        tls13_ks_init(&binder_ks, psk_hash);
+        tls13_compute_binder(&binder_ks, tk->psk, tk->psk_len,
                              &hs->transcript,
                              buf + 5, (pos - 5) - binders_section,
                              buf + binder_off);
