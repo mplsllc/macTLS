@@ -68,8 +68,13 @@ static br_x509_minimal_context gT13X509;
 static unsigned char           gT13IoBuf[BR_SSL_BUFSIZE_BIDI];
 static tls13_hs_ctx            gT13Hs;
 static unsigned char           gT13Recv[32768];
-static unsigned char           gT13Plain[16384];
 static unsigned char           gT13Wire[640];
+/* Decrypted app-data plaintext goes into gT13IoBuf: it's the BearSSL
+ * engine record buffer (BR_SSL_BUFSIZE_BIDI, ~33 KB), but the 1.3 path
+ * never drives the engine's record I/O, so it's free after handshake
+ * setup. Reusing it avoids a separate 16 KB static that would tighten
+ * the MacTLSTest heap (the async Stage D2 NewPtr is sensitive to it). */
+#define gT13Plain gT13IoBuf
 
 static void ot13_status(char *out, unsigned long cap, const char *msg, long code)
 {
