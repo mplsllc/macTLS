@@ -89,4 +89,15 @@ void tls13_ks_derive_resumption_psk(tls13_keysched *ks,
                                      size_t nonce_len,
                                      void *psk_out);
 
+/* Early Secret from a resumption PSK: HKDF-Extract(salt=0, IKM=PSK).
+ * Leaves the Early Secret in ks->secret (macTLS#2 Stage C). */
+void tls13_ks_extract_early_psk(tls13_keysched *ks,
+                                const void *psk, size_t psk_len);
+
+/* Binder key = Derive-Secret(Early Secret, "res binder", ""). Call while
+ * ks->secret holds the Early Secret (right after extract_early_psk). The
+ * PSK binder is HMAC(finished_key, transcript), where finished_key =
+ * tls13_ks_derive_finished_key(binder_key). macTLS#2 Stage C. */
+void tls13_ks_derive_binder_key(tls13_keysched *ks, void *binder_key_out);
+
 #endif /* OSTLS_TLS13_KEYSCHED_H */

@@ -185,6 +185,48 @@ static void test_resumption(void)
     assert_bytes("Resumption PSK", expected_psk, psk, 32);
 }
 
+/* PSK binder key schedule (macTLS#2 Stage C):
+ *   Early Secret = HKDF-Extract(0, PSK)
+ *   binder_key   = Derive-Secret(Early Secret, "res binder", "")
+ *   finished_key = HKDF-Expand-Label(binder_key, "finished", "", L)
+ * Pinned against an independent HKDF reference (psk = 0x04*32). */
+static void test_binder_key(void)
+{
+    tls13_keysched ks;
+    unsigned char psk[32];
+    unsigned char binder_key[32];
+    unsigned char finished_key[32];
+    unsigned char expected_early[32];
+    unsigned char expected_binder_key[32];
+    unsigned char expected_finished_key[32];
+
+    memset(psk, 0x04, sizeof psk);
+
+    hex_to_bytes(
+        "25b9badd15b98488199798d0f48f1d9e"
+        "f93c88def354a699c69abd20051052e6",
+        expected_early, 32);
+    hex_to_bytes(
+        "e38cc202daa10c8e4b3260cfdd941529"
+        "d6112c8760b5085259cfcc1951d0cd63",
+        expected_binder_key, 32);
+    hex_to_bytes(
+        "2ef2ec0326ee1824ac1e20ba75eba636"
+        "7c2e2d4110cf0d0e74a24099e0ca705e",
+        expected_finished_key, 32);
+
+    tls13_ks_init(&ks, &br_sha256_vtable);
+    tls13_ks_extract_early_psk(&ks, psk, 32);
+    assert_bytes("Early Secret (from PSK)", expected_early, ks.secret, 32);
+
+    tls13_ks_derive_binder_key(&ks, binder_key);
+    assert_bytes("Binder key", expected_binder_key, binder_key, 32);
+
+    tls13_ks_derive_finished_key(&ks, binder_key, finished_key);
+    assert_bytes("Binder finished key", expected_finished_key,
+                 finished_key, 32);
+}
+
 int main(void)
 {
     printf("=== TLS 1.3 Key Schedule Tests (macTLS) ===\n\n");
@@ -193,6 +235,7 @@ int main(void)
     test_early_secret();
     test_handshake_secret();
     test_resumption();
+    test_binder_key();
 
     printf("\n%d test(s) failed.\n", failures);
     return failures > 0 ? 1 : 0;

@@ -341,3 +341,41 @@ void tls13_ks_derive_resumption_psk(tls13_keysched *ks,
                       ticket_nonce, nonce_len,
                       psk_out, ks->hash_len);
 }
+
+/*
+ * Early Secret from a resumption PSK (macTLS#2 Stage C). Same as
+ * tls13_ks_extract_early but the IKM is the PSK instead of zeros:
+ *   Early Secret = HKDF-Extract(salt=0, IKM=PSK)
+ * Leaves the Early Secret in ks->secret so tls13_ks_derive_binder_key
+ * (and, later, the resumed early/handshake chain) can build on it.
+ */
+void tls13_ks_extract_early_psk(tls13_keysched *ks,
+                                const void *psk, size_t psk_len)
+{
+    unsigned char zeros[64];
+    memset(zeros, 0, ks->hash_len);
+
+    hkdf_extract(ks->hash, ks->hash_len,
+                 zeros, ks->hash_len,   /* salt: zeros */
+                 psk, psk_len,          /* IKM: the resumption PSK */
+                 ks->secret);
+}
+
+/*
+ * Binder key (RFC 8446 Section 7.1): the key that authenticates a PSK
+ * identity in the pre_shared_key extension's binder. For a resumption
+ * PSK the label is "res binder" (an external PSK would use "ext binder").
+ *   binder_key = Derive-Secret(Early Secret, "res binder", "")
+ * MUST be called while ks->secret holds the Early Secret (i.e. right
+ * after tls13_ks_extract_early_psk). The actual binder is then
+ * HMAC(HKDF-Expand-Label(binder_key, "finished", "", L), transcript) --
+ * derive the finished key via tls13_ks_derive_finished_key(binder_key).
+ */
+void tls13_ks_derive_binder_key(tls13_keysched *ks, void *binder_key_out)
+{
+    derive_secret(ks->hash, ks->hash_len,
+                  ks->secret,
+                  "res binder", 10,
+                  ks->empty_hash,
+                  binder_key_out);
+}

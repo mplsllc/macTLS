@@ -78,12 +78,18 @@ an HKDF reference), and the malformed/oversize/no-res_master rejection paths.
 Stage E** (its only consumer is OSTLS_Start, so it lives with the async
 wiring).
 
-### Stage C — Resumption ClientHello + binder *(host test)*
-When a live ticket exists: add `psk_key_exchange_modes(psk_dhe_ke)` and
-`pre_shared_key` (MUST be the last extension): identity = ticket +
-obfuscated_ticket_age; binder = HMAC(binder_key, Transcript-Hash(ClientHello
-**without** the binders)). The transcript-truncation + binder patch-in is the
-one fiddly part — test the binder against openssl before going further.
+### Stage C — Resumption ClientHello + binder
+Split in two: **C1 binder key schedule (DONE, host KAT 2026-05-29)** —
+`tls13_ks_extract_early_psk` (Early Secret = HKDF-Extract(0, PSK)) +
+`tls13_ks_derive_binder_key` ("res binder") in [ostls_tls13_keysched.c];
+binder finished key reuses `tls13_ks_derive_finished_key`. KAT in
+`test_binder_key` pins Early/binder_key/finished_key vs an HKDF reference.
+**C2 ClientHello assembly (TODO)** — add `psk_key_exchange_modes(psk_dhe_ke)`
+and `pre_shared_key` (last extension): identity = ticket +
+obfuscated_ticket_age; binder = HMAC(finished_key, Transcript-Hash(ClientHello
+**without** the binders)). The transcript-truncation (hash everything up to
+the binders, length fields still counting them) + binder patch-in is the
+fiddly part; verify end-to-end against a real server at Stage D/E.
 
 ### Stage D — Resumed key schedule + accept/reject
 Early Secret = `HKDF-Extract(0, res_psk)` (not zeros); derive binder_key. If
