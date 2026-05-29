@@ -56,6 +56,7 @@
 #include "ostls_d1_probe.h"
 #include "ostls_async.h"
 #include "ostls_entropy.h"
+#include "ostls_tls13_selftest.h"
 #include "ostls_log.h"
 
 
@@ -551,6 +552,23 @@ main(void)
         e_fail = OSTLS_EntropySelfTest(&e_fp);
         OSTLS_LogLinef("Stage E    entropy selftest         -> %s (fp=%08lX)",
                        e_fail ? "FAIL" : "PASS", e_fp);
+    }
+
+    /*
+     * Stage F: TLS 1.3 crypto self-test. In-memory; runs the key schedule
+     * and record layer against RFC 8446/8448 vectors plus a record
+     * round-trip and tamper-reject. This is the first time the ported
+     * TLS 1.3 code runs on real PPC -- it confirms the C89 port compiles
+     * under CW8 and produces correct results (incl. the 64-bit record
+     * sequence number). No network. The handshake itself is exercised
+     * later once it's wired into the OT transport (Stage D integration).
+     */
+    {
+        int f_fail;
+        OSTLS_LogLine("Stage F    TLS 1.3 crypto self-test  ...");
+        f_fail = OSTLS_TLS13_SelfTest();
+        OSTLS_LogLinef("Stage F    TLS 1.3 crypto self-test  -> %s (%d failure(s))",
+                       f_fail ? "FAIL" : "PASS", f_fail);
     }
 
     /*
