@@ -10,15 +10,20 @@
 
 BEARSSL = ../../bearssl
 CFLAGS  = -std=c99 -Wall -I$(BEARSSL)/inc -I$(BEARSSL)/src
-BSSL    = $(wildcard $(BEARSSL)/src/hash/*.c $(BEARSSL)/src/mac/*.c $(BEARSSL)/src/codec/*.c)
+BSSL    = $(wildcard $(BEARSSL)/src/hash/*.c $(BEARSSL)/src/mac/*.c \
+                     $(BEARSSL)/src/codec/*.c $(BEARSSL)/src/symcipher/*.c \
+                     $(BEARSSL)/src/aead/*.c $(BEARSSL)/src/int/*.c)
 
-TESTS = test_tls13_keysched
+TESTS = test_tls13_keysched test_tls13_record
 
 test: $(TESTS)
 	@for t in $(TESTS); do echo "--- $$t ---"; ./$$t || exit 1; done
 
 test_tls13_keysched: test_tls13_keysched.c ../../os9/ostls_tls13_keysched.c
 	$(CC) $(CFLAGS) test_tls13_keysched.c ../../os9/ostls_tls13_keysched.c $(BSSL) -o $@
+
+test_tls13_record: test_tls13_record.c ../../os9/ostls_tls13_record.c
+	$(CC) $(CFLAGS) test_tls13_record.c ../../os9/ostls_tls13_record.c $(BSSL) -o $@
 
 clean:
 	rm -f $(TESTS)
