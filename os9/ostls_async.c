@@ -725,8 +725,11 @@ ostls_setup_bearssl(OSTLSConnection *conn)
              * ECDHE cost). TickCount() is 60/sec on OS 9. On a miss the
              * normal full handshake runs. */
             {
-                UInt32 age_ms = 0;
-                if (OSTLS_TicketCacheGet(conn->host, (UInt32)TickCount(), 60,
+                /* uint32_t (NOT UInt32): the cache API takes uint32_t*, and
+                 * CW8 treats unsigned long* (UInt32*) and unsigned int*
+                 * (uint32_t*) as incompatible pointer types. Match exactly. */
+                uint32_t age_ms = 0;
+                if (OSTLS_TicketCacheGet(conn->host, (uint32_t)TickCount(), 60,
                                          &conn->offer_ticket_storage,
                                          &age_ms)) {
                     conn->hs13->resuming = 1;
@@ -1473,7 +1476,7 @@ pump_tls13_consume_record(OSTLSConnection *conn, OSTLSEvent *best_event)
                                           conn->hs13->plain_buf, plen);
         if (conn->hs13->ticket_valid) {
             OSTLS_TicketCachePut(conn->host, &conn->hs13->ticket,
-                                 (UInt32)TickCount());
+                                 (uint32_t)TickCount());
             conn->hs13->ticket_valid = 0;   /* consumed */
             OSTLS_LogLinef("T13 async: cached resumption ticket for %s",
                            conn->host);
