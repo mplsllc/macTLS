@@ -117,10 +117,17 @@ issue tickets without it (RFC 8446 4.2.9), so we never received one before;
 set up until ServerHello — using it crashed on a NULL hash). Note: servers
 that don't ticket these connections (Cloudflare/Google/nginx-without-tickets)
 SKIP cleanly; 68kmla (XenForo) tickets reliably.
-**E2 cache + async wiring (TODO):** build the host-keyed RAM cache (fixed
-slots, LRU, lifetime expiry, explicit `now` for host testing) and wire it
-into `ostls_async.c` — harvest `hs13->ticket` on NewSessionTicket, consult on
-OSTLS_Start to decide full vs resumed. This is the part that ships to the Mac.
+**E2 cache + async wiring (DONE host-side 2026-05-30; hardware gate = F):**
+new `ostls_ticket_cache.[ch]` — a 6-slot host-keyed RAM cache (LRU, lifetime
+expiry, caller-supplied clock so it's host-testable). 13-case host test in
+tests/host/test_tls13_ticket_cache.c (put/hit/miss/overwrite/expiry/LRU/age)
+all pass. Wired into `ostls_async.c`: at handshake init, consult the cache for
+the host and (on a live hit) set hs13->resuming + offer_ticket +
+offer_obfuscated_age; in pump_tls13_consume_record, a post-handshake handshake
+record now runs through tls13_handle_post_handshake and any resulting ticket
+is cached for the host (TickCount, 60/sec). C89-clean. New conn field
+offer_ticket_storage backs the offered ticket. The full resume-through-the-
+async-layer can only be exercised on hardware → Stage F.
 
 ### Stage F — Hardware verification *(gate)*
 On the G3, time full vs resumed handshake to a real ticketing server. Accept

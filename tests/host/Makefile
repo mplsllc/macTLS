@@ -18,7 +18,7 @@ BSSL_ALL = $(shell find $(BEARSSL)/src -name '*.c')
 
 OS9 = ../../os9
 
-TESTS = test_tls13_keysched test_tls13_record test_tls13_ticket
+TESTS = test_tls13_keysched test_tls13_record test_tls13_ticket test_tls13_ticket_cache
 
 # Offline crypto tests against known vectors.
 test: $(TESTS)
@@ -59,6 +59,11 @@ test_tls13_keysched: test_tls13_keysched.c ../../os9/ostls_tls13_keysched.c
 
 test_tls13_record: test_tls13_record.c ../../os9/ostls_tls13_record.c
 	$(CC) $(CFLAGS) test_tls13_record.c ../../os9/ostls_tls13_record.c $(BSSL) -o $@
+
+# Ticket cache is self-contained (only needs the hash vtables for the
+# tls13_session_ticket type pulled in via the handshake header).
+test_tls13_ticket_cache: test_tls13_ticket_cache.c ../../os9/ostls_ticket_cache.c
+	$(CC) $(CFLAGS) test_tls13_ticket_cache.c ../../os9/ostls_ticket_cache.c $(BSSL) -o $@
 
 # Ticket parse pulls in handshake.c, which references ec/x509/rsa, so it
 # needs the full BearSSL like the live handshake test.

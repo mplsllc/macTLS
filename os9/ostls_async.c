@@ -20,6 +20,7 @@
 #include "ostls_entropy.h"
 #include "ostls_tls13_handshake.h"   /* TLS 1.3 state machine (live path) */
 #include "ostls_tls13_record.h"      /* TLS 1.3 record encrypt/decrypt    */
+#include "ostls_ticket_cache.h"      /* TLS 1.3 resumption ticket cache   */
 
 #include "bearssl_ssl.h"
 #include "bearssl_x509.h"
@@ -227,6 +228,7 @@ struct OSTLSConnection {
      * t13_plain_off..t13_plain_len. Outbound app-data is encrypted into
      * t13_send_rec and flushed across pumps via t13_send_off..len. */
     tls13_hs_ctx *hs13;                /* lazily NewPtr'd only while 1.3 is attempted; NULL otherwise */
+    tls13_session_ticket offer_ticket_storage; /* E2: cached ticket we offer this connection (hs13->offer_ticket points here) */
     int           tls13_mode;          /* one of kT13Mode_* */
     Boolean       tls13_disabled;      /* set after a Fallback12 reconnect */
     UInt32        tls13_recv_len;      /* raw inbound bytes held in ssl_iobuf */
@@ -718,6 +720,23 @@ ostls_setup_bearssl(OSTLSConnection *conn)
             tls13_handshake_init(conn->hs13);
             conn->hs13->eng = &conn->sc.eng;
             conn->hs13->x509_ctx = (const br_x509_class **)&conn->xc.vtable;
+            /* macTLS#2 E2: if we hold a live ticket for this host, offer it
+             * so the handshake resumes (skips the cert verify + most of the
+             * ECDHE cost). TickCount() is 60/sec on OS 9. On a miss the
+             * normal full handshake runs. */
+            {
+                UInt32 age_ms = 0;
+                if (OSTLS_TicketCacheGet(conn->host, (UInt32)TickCount(), 60,
+                                         &conn->offer_ticket_storage,
+                                         &age_ms)) {
+                    conn->hs13->resuming = 1;
+                    conn->hs13->offer_ticket = &conn->offer_ticket_storage;
+                    conn->hs13->offer_obfuscated_age =
+                        age_ms + conn->offer_ticket_storage.age_add;
+                    OSTLS_LogLinef("T13 async: resuming %s (cached ticket)",
+                                   conn->host);
+                }
+            }
             conn->tls13_mode = kT13Mode_Trying;
             conn->t13_dbg_state = 0xFFFFFFFFUL;
             OSTLS_LogLinef("T13 async: armed (server=%s)", conn->server_name);
@@ -1444,7 +1463,24 @@ pump_tls13_consume_record(OSTLSConnection *conn, OSTLSEvent *best_event)
         }
         return 1;
     }
-    /* handshake record (ticket / key update): ignore. */
+    /* Post-handshake handshake record (NewSessionTicket / KeyUpdate).
+     * Parse it; if it produced a resumption ticket, cache it for this host
+     * so the next connection can resume (macTLS#2 E2). The return value is
+     * intentionally ignored — an unsupported KeyUpdate stays a no-op, as
+     * before. */
+    if (inner == TLS13_CT_HANDSHAKE) {
+        (void)tls13_handle_post_handshake(conn->hs13,
+                                          conn->hs13->plain_buf, plen);
+        if (conn->hs13->ticket_valid) {
+            OSTLS_TicketCachePut(conn->host, &conn->hs13->ticket,
+                                 (UInt32)TickCount());
+            conn->hs13->ticket_valid = 0;   /* consumed */
+            OSTLS_LogLinef("T13 async: cached resumption ticket for %s",
+                           conn->host);
+        }
+        return 1;
+    }
+    /* anything else: ignore. */
     return 1;
 }
 
