@@ -470,6 +470,79 @@ d3_handshake_recv(const char *host, UInt16 port, const char *sni)
     return recv_bytes;
 }
 
+/*
+ * Stage D4 helper: async connect + full TLS 1.3, then send a GET and keep
+ * reading for a few seconds. Reading PAST the handshake is the point: the
+ * server's post-handshake NewSessionTicket arrives during the response and
+ * gets harvested into the resumption cache, so a second connect to the same
+ * host can resume. Returns handshake recv bytes (0 on failure); a resumed
+ * handshake skips the server cert chain, so a much smaller value on the
+ * second connect is the signal. macTLS#2 Stage F.
+ */
+static UInt32
+d4_resume_recv(const char *host, UInt16 port, const char *sni)
+{
+    OSTLSConnection *conn;
+    OSTLSConfig      cfg;
+    OSTLSEvent       ev;
+    OSTLSState       st;
+    OSTLSDiagnostics diag;
+    OSErr            err;
+    UInt32           deadline;
+    UInt32           recv_bytes;
+    UInt32           read_until;
+    int              sent;
+    int              open_seen;
+    char             req[160];
+    char             buf[512];
+
+    memset(&cfg, 0, sizeof cfg);
+    cfg.host = host;
+    cfg.port = port;
+    cfg.server_name = sni;
+
+    conn = NULL;
+    if (OSTLS_New(&conn, &cfg) != kOSTLSAsync_OK || conn == NULL) return 0;
+    if (OSTLS_Start(conn) != kOSTLSAsync_OK) { OSTLS_Dispose(conn); return 0; }
+
+    sprintf(req, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host);
+    recv_bytes = 0; sent = 0; open_seen = 0; read_until = 0;
+    deadline = (UInt32)TickCount() + 60UL * 60UL;     /* 60s overall */
+    for (;;) {
+        EventRecord nullev;
+        if ((UInt32)TickCount() > deadline) break;
+        err = OSTLS_Pump(conn, 6, &ev);
+        WaitNextEvent(everyEvent, &nullev, 1, NULL);
+        if (err != kOSTLSAsync_OK) break;
+        st = OSTLS_GetState(conn);
+        if (st == kOSTLSStateFailed) { OSTLS_Dispose(conn); return 0; }
+        if (!open_seen && st == kOSTLSStateOpen) {
+            OSTLS_GetDiagnostics(conn, &diag);
+            recv_bytes = diag.ot_recv_bytes;
+            open_seen = 1;
+            read_until = (UInt32)TickCount() + 5UL * 60UL; /* drain ~5s */
+        }
+        if (st == kOSTLSStateOpen && !sent) {
+            UInt32 w = 0;
+            OSTLS_Write(conn, req, (UInt32)strlen(req), &w);
+            if (w == (UInt32)strlen(req)) sent = 1;
+        }
+        if (open_seen) {
+            UInt32 nread;
+            for (;;) {
+                nread = 0;
+                if (OSTLS_Read(conn, buf, (UInt32)sizeof buf, &nread)
+                        != kOSTLSAsync_OK || nread == 0) break;
+            }
+        }
+        if (st == kOSTLSStateClosed) break;
+        if (open_seen && (UInt32)TickCount() > read_until) break;
+    }
+    OSTLS_Close(conn);
+    OSTLS_Dispose(conn);
+    return recv_bytes;
+}
+
 
 int
 main(void)
@@ -1117,6 +1190,33 @@ main(void)
             OSTLS_LogLine("Stage D3   session resumption    -> NO RESUME (server declined or full handshake)");
         } else {
             OSTLS_LogLine("Stage D3   session resumption    -> FAIL (connect error)");
+        }
+    }
+
+    /*
+     * Stage D4: TLS 1.3 session resumption (PSK / NewSessionTicket) over
+     * the async path -- the macTLS#2 hardware gate. Two 1.3 connects to a
+     * ticketing host. Connect 1 does a full handshake and, while reading
+     * the response, harvests the server's NewSessionTicket into the cache
+     * (look for 'T13 async: cached resumption ticket'). Connect 2 offers it;
+     * on accept the handshake skips the certificate ('T13 async: resuming'
+     * + 'COMPLETE') and pulls far fewer bytes. 68kmla tickets reliably.
+     */
+    {
+        UInt32 r1, r2;
+        OSTLS_LogLine("Stage D4   TLS 1.3 resumption (2x 68kmla.org) ...");
+        r1 = d4_resume_recv("68kmla.org", 443, "68kmla.org");
+        r2 = d4_resume_recv("68kmla.org", 443, "68kmla.org");
+        OSTLS_LogLinef("Stage D4   connect 1 handshake recv=%lu bytes (full)",
+                       (unsigned long)r1);
+        OSTLS_LogLinef("Stage D4   connect 2 handshake recv=%lu bytes (resume?)",
+                       (unsigned long)r2);
+        if (r1 > 0 && r2 > 0 && r2 < (r1 / 2)) {
+            OSTLS_LogLine("Stage D4   TLS 1.3 resumption  -> PASS (2nd handshake abbreviated, cert skipped)");
+        } else if (r1 > 0 && r2 > 0) {
+            OSTLS_LogLine("Stage D4   TLS 1.3 resumption  -> NO RESUME (see 'resuming' log line / server declined)");
+        } else {
+            OSTLS_LogLine("Stage D4   TLS 1.3 resumption  -> FAIL (connect error)");
         }
     }
 
