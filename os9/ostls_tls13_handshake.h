@@ -100,8 +100,14 @@ void tls13_transcript_reset_for_hrr(tls13_transcript *t);
  * resumption PSK is already derived (nonce folded in), so the nonce is
  * not retained. `ticket` is the opaque blob we echo back as the PSK
  * identity on a resumed ClientHello. The cache layer stamps received_ms
- * and pairs this with a host; `valid` gates use. */
-#define TLS13_MAX_TICKET_LEN 1024
+ * and pairs this with a host; `valid` gates use.
+ *
+ * 512 (was 1024): real TLS 1.3 tickets are small (68kmla ~32B, most
+ * servers <512B), and this struct is embedded in tls13_hs_ctx (the ~35KB
+ * context whose NewPtrClear is marginal on a tight app partition) AND in
+ * each of the 6 cache slots, so the cap directly drives footprint.
+ * Oversize tickets are skipped gracefully (full handshake next time). */
+#define TLS13_MAX_TICKET_LEN 512
 typedef struct {
     int           valid;
     unsigned char psk[64];          /* resumption PSK (psk_len bytes) */
