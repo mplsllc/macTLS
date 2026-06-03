@@ -1341,49 +1341,64 @@ static tls13_hs_result tls13_read_encrypted_hs(
             uint32_t hs_body_len;
             size_t total_hs;
 
-            /* Need at least 4 bytes for the handshake header */
-            if (remaining < 4) {
-                hs->error = BR_ERR_BAD_PARAM;
-                return kTLS13_Error;
-            }
+            /*
+             * Extract a complete handshake message if both the 4-byte
+             * header AND the full body are buffered. If either is
+             * incomplete, the message spans multiple TLS records: rather
+             * than fail (the old "not supported in v1" path), we compact
+             * the partial bytes to the front of plain_buf and fall
+             * through to read + APPEND the next record, then retry.
+             *
+             * fixes370 (#167): Facebook's Certificate message carries a
+             * large RSA-intermediate chain that the server splits across
+             * record boundaries, so the Certificate handshake message
+             * does not fit in one decrypted record. mactrove's smaller
+             * all-ECDSA chain fits in a single record, which is why it
+             * worked and Facebook hit BR_ERR_BAD_PARAM here at state 4.
+             */
+            if (remaining >= 4) {
+                *out_hs_type = hs->plain_buf[hs->plain_offset];
+                hs_body_len = get_u24(hs->plain_buf + hs->plain_offset + 1);
+                total_hs = 4 + (size_t)hs_body_len;
 
-            *out_hs_type = hs->plain_buf[hs->plain_offset];
-            hs_body_len = get_u24(hs->plain_buf + hs->plain_offset + 1);
-            total_hs = 4 + (size_t)hs_body_len;
-
-            if (total_hs > remaining) {
                 /*
-                 * Handshake message spans multiple records —
-                 * uncommon but legal. Not supported in v1.
+                 * out_data is hs->msg_buf. A single handshake message
+                 * larger than our reassembly buffer is genuinely
+                 * unsupported (would overflow msg_buf). plain_buf and
+                 * msg_buf are the same size, so this also bounds how much
+                 * we can reassemble below.
                  */
-                hs->error = BR_ERR_BAD_PARAM;
-                return kTLS13_Error;
+                if (total_hs > sizeof(hs->msg_buf)) {
+                    hs->error = BR_ERR_BAD_PARAM;
+                    return kTLS13_Error;
+                }
+
+                if (total_hs <= remaining) {
+                    /* Whole message present — hand it up. */
+                    memcpy(out_data, hs->plain_buf + hs->plain_offset,
+                           total_hs);
+                    *out_len = total_hs;
+                    hs->plain_offset += total_hs;
+                    if (hs->plain_offset >= hs->plain_len) {
+                        hs->plain_len = 0;
+                        hs->plain_offset = 0;
+                    }
+                    return kTLS13_OK;
+                }
             }
 
             /*
-             * out_data is hs->msg_buf. Never copy more than it holds --
-             * a large Certificate message would otherwise overflow it
-             * and corrupt the struct (the original crash on big cert
-             * chains). msg_buf is sized >= plain_buf so this can't fire
-             * for a single-record message, but guard regardless.
+             * Incomplete message (split header or split body). Slide the
+             * leftover to the front of plain_buf so the next record's
+             * plaintext appends right after it, then drop into the
+             * record-read path below and loop back to retry extraction.
              */
-            if (total_hs > sizeof(hs->msg_buf)) {
-                hs->error = BR_ERR_BAD_PARAM;
-                return kTLS13_Error;
+            if (hs->plain_offset > 0) {
+                memmove(hs->plain_buf,
+                        hs->plain_buf + hs->plain_offset, remaining);
             }
-
-            /* Copy the handshake message to out_data */
-            memcpy(out_data, hs->plain_buf + hs->plain_offset, total_hs);
-            *out_len = total_hs;
-            hs->plain_offset += total_hs;
-
-            /* If we consumed all plaintext, reset for next record */
-            if (hs->plain_offset >= hs->plain_len) {
-                hs->plain_len = 0;
-                hs->plain_offset = 0;
-            }
-
-            return kTLS13_OK;
+            hs->plain_len = remaining;
+            hs->plain_offset = 0;
         }
 
         /* Plaintext buffer empty — read the next record from the network */
@@ -1434,15 +1449,28 @@ static tls13_hs_result tls13_read_encrypted_hs(
          */
         {
             size_t pt_len = 0;
+            /*
+             * fixes370 (#167) — APPEND the decrypted plaintext after any
+             * leftover partial handshake message (plain_offset is 0 here;
+             * the extraction block compacted the leftover to the front and
+             * set plain_len to its size, or plain_len is 0 for a fresh
+             * buffer). Bound the append so multi-record reassembly can
+             * never overflow plain_buf.
+             */
+            if ((size_t)hs->plain_len + (size_t)record_len >
+                sizeof(hs->plain_buf)) {
+                hs->error = BR_ERR_BAD_PARAM;
+                return kTLS13_Error;
+            }
             ret = tls13_record_decrypt(&hs->read_ctx,
                                        recv_buf + 5, record_len,
-                                       hs->plain_buf, &pt_len, &inner_ct);
+                                       hs->plain_buf + hs->plain_len,
+                                       &pt_len, &inner_ct);
             if (ret != 0) {
                 hs->error = BR_ERR_BAD_MAC;
                 return kTLS13_Error;
             }
-            hs->plain_len = pt_len;
-            hs->plain_offset = 0;
+            hs->plain_len += pt_len;
         }
 
         /* Consume the record from the front of the recv buffer */
