@@ -218,9 +218,20 @@ static const uint16_t tls12_cipher_suites[] = {
     0xCCA9,  /* TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 */
     0xCCA8,  /* TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 */
     0xC02B,  /* TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 */
-    0xC02F,  /* TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 */
-    0xC02C,  /* TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 */
-    0xC030,  /* TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 */
+    0xC02F   /* TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 */
+    /*
+     * fixes412 -- SHA-256 suites only. AES_256_GCM_SHA384 (0xC02C/0xC030)
+     * REMOVED for the same reason the TLS 1.3 list above omits 0x1302: the
+     * SHA-384 path is unsound on CW8 PPC (see the sha2big.c miscompile fixed
+     * in fixes411). With those offered, servers that prefer AES-256 ran the
+     * TLS 1.2 key schedule / PRF through SHA-384 and derived WRONG keys, so
+     * macTLS could not decrypt the rest of the handshake -- the cipher_dec
+     * ~4867 stall, 4s no-progress timeout, then retry: the slow-load
+     * regression on otherwise-valid sites (mactrove, wikipedia, ...).
+     * ChaCha20 / AES-128-GCM (SHA-256 transcript) are unaffected and
+     * plenty strong. Restore AES-256 once the SHA-384 self-test passes on
+     * hardware.
+     */
 };
 
 /*
