@@ -273,4 +273,12 @@ void *      OSTLS_GetUserRefcon(OSTLSConnection *conn);
  */
 void        OSTLS_SetTryTLS13(int enabled);
 
+/*
+ * fixes413 -- SHA-384 known-answer self-test. Returns 0 if SHA-384("abc")
+ * matches the NIST vector (the macTLS SHA-384 core is correct on this build),
+ * nonzero if it is wrong. Lets the host print a one-line on-device proof at
+ * startup that the CW8 SHA-384 fix (fixes411) is live and computing correctly.
+ */
+int         OSTLS_SHA384_KAT(void);
+
 #endif /* OSTLS_ASYNC_H */

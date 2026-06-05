@@ -2086,3 +2086,30 @@ OSTLS_SetTryTLS13(int enabled)
 {
     g_ostls_try_tls13 = enabled ? 1 : 0;
 }
+
+/*
+ * fixes413 -- SHA-384 known-answer self-test. Returns 0 if SHA-384("abc")
+ * equals the NIST vector (the macTLS SHA-384 core computes correctly on this
+ * build), nonzero if wrong. The host logs the result at startup so we can see
+ * ON-DEVICE whether the fixes411 CW8 SHA-384 fix is live and correct -- the
+ * defect this gates was invisible for the life of the project precisely
+ * because nothing ever checked SHA-384 on the metal.
+ */
+int
+OSTLS_SHA384_KAT(void)
+{
+    br_sha384_context sc;
+    unsigned char out[48];
+    static const unsigned char expect[48] = {
+        0xcb,0x00,0x75,0x3f,0x45,0xa3,0x5e,0x8b,
+        0xb5,0xa0,0x3d,0x69,0x9a,0xc6,0x50,0x07,
+        0x27,0x2c,0x32,0xab,0x0e,0xde,0xd1,0x63,
+        0x1a,0x8b,0x60,0x5a,0x43,0xff,0x5b,0xed,
+        0x80,0x86,0x07,0x2b,0xa1,0xe7,0xcc,0x23,
+        0x58,0xba,0xec,0xa1,0x34,0xc8,0x25,0xa7
+    };
+    br_sha384_init(&sc);
+    br_sha384_update(&sc, "abc", 3);
+    br_sha384_out(&sc, out);
+    return (memcmp(out, expect, 48) == 0) ? 0 : 1;
+}
