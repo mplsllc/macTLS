@@ -91,6 +91,150 @@ static const uint64_t K[80] = {
 	0x5FCB6FAB3AD6FAEC, 0x6C44198C4A475817
 };
 
+#ifdef __MWERKS__
+/*
+ * fixes411 -- CW8 PPC SHA-512/384 core in 32-bit limbs.
+ *
+ * The stock sha2big_round (in the #else below) is unconditional uint64_t:
+ * ROTR via "<< (64 - n)", a 64-bit add per round, and an 80-word 64-bit
+ * message schedule. CodeWarrior 8 for PowerPC miscompiles that split-register
+ * 64-bit codegen -- the same class of defect that forced BR_64 = 0 (32-bit
+ * limbs) in BearSSL's big-integer core in this tree. The consequence was a
+ * WRONG SHA-384/512 digest on the G3 that stayed invisible for the life of
+ * the project: BearSSL runs all hashes over every certificate but only
+ * COMPARES the digest whose algorithm matches the signature, and every
+ * hardware-tested trust chain until now terminated on SHA-256 or ECDSA
+ * (Let's Encrypt/ISRG, DigiCert, ...). The Sectigo "Public Server
+ * Authentication" hierarchy (USERTrust root, a large fraction of the web)
+ * is the first chain whose trust decision consumes a SHA-384 signature, so
+ * the broken digest finally surfaced -- as BR_ERR_X509_NOT_TRUSTED on the
+ * TLS 1.2 path and a generic handshake failure on the TLS 1.3 path (both
+ * share this x509 validator).
+ *
+ * This replacement computes the identical SHA-512 with NO native 64-bit
+ * arithmetic: each 64-bit word is a {hi, lo} pair of 32-bit limbs; add
+ * carries by hand; rotate/shift split across the word boundary; XOR/AND/OR
+ * stay full-width per limb (bitwise, carry-free, safe). The uint64 <-> limb
+ * split at the val[] and K[] boundaries uses a big-endian union (h2[0] = MSW
+ * on PPC) to avoid a 64-bit ">> 32". Verified byte-for-byte against the NIST
+ * SHA-384("abc"), SHA-512("abc") and a multi-block vector on a 64-bit host
+ * (round + this exact uint64/K-bridge shape). OSTLS_SHA384_SelfTest() runs
+ * this at macTLS init so a future regression fails loud at launch instead of
+ * silently rejecting certificates.
+ */
+
+typedef struct { unsigned long hi, lo; } sha2big_lw_;
+#define SHA2BIG_M32_(x)  ((unsigned long)(x) & 0xFFFFFFFFUL)
+
+static void
+sha2big_add_(sha2big_lw_ *r, sha2big_lw_ a, sha2big_lw_ b)
+{
+	unsigned long lo, carry;
+	lo = SHA2BIG_M32_(a.lo + b.lo);
+	carry = (lo < SHA2BIG_M32_(a.lo)) ? 1UL : 0UL;
+	r->lo = lo;
+	r->hi = SHA2BIG_M32_(a.hi + b.hi + carry);
+}
+static sha2big_lw_
+sha2big_xor_(sha2big_lw_ a, sha2big_lw_ b)
+{ sha2big_lw_ r; r.hi = a.hi ^ b.hi; r.lo = a.lo ^ b.lo; return r; }
+static sha2big_lw_
+sha2big_and_(sha2big_lw_ a, sha2big_lw_ b)
+{ sha2big_lw_ r; r.hi = a.hi & b.hi; r.lo = a.lo & b.lo; return r; }
+static sha2big_lw_
+sha2big_or_(sha2big_lw_ a, sha2big_lw_ b)
+{ sha2big_lw_ r; r.hi = a.hi | b.hi; r.lo = a.lo | b.lo; return r; }
+static sha2big_lw_
+sha2big_rotr_(sha2big_lw_ x, int n)
+{
+	sha2big_lw_ r;
+	unsigned long t;
+	if (n >= 32) { t = x.hi; x.hi = x.lo; x.lo = t; n -= 32; }
+	if (n == 0) { return x; }
+	r.hi = SHA2BIG_M32_((x.hi >> n) | SHA2BIG_M32_(x.lo << (32 - n)));
+	r.lo = SHA2BIG_M32_((x.lo >> n) | SHA2BIG_M32_(x.hi << (32 - n)));
+	return r;
+}
+static sha2big_lw_
+sha2big_shr_(sha2big_lw_ x, int n)
+{
+	sha2big_lw_ r;
+	r.hi = SHA2BIG_M32_(x.hi >> n);
+	r.lo = SHA2BIG_M32_((x.lo >> n) | SHA2BIG_M32_(x.hi << (32 - n)));
+	return r;
+}
+#define SHA2BIG_CH_(x, y, z) \
+	sha2big_xor_(sha2big_and_(sha2big_xor_(y, z), x), z)
+#define SHA2BIG_MAJ_(x, y, z) \
+	sha2big_or_(sha2big_and_(y, z), sha2big_and_(sha2big_or_(y, z), x))
+static sha2big_lw_
+sha2big_bsg0_(sha2big_lw_ x)
+{ return sha2big_xor_(sha2big_xor_(sha2big_rotr_(x, 28),
+	sha2big_rotr_(x, 34)), sha2big_rotr_(x, 39)); }
+static sha2big_lw_
+sha2big_bsg1_(sha2big_lw_ x)
+{ return sha2big_xor_(sha2big_xor_(sha2big_rotr_(x, 14),
+	sha2big_rotr_(x, 18)), sha2big_rotr_(x, 41)); }
+static sha2big_lw_
+sha2big_ssg0_(sha2big_lw_ x)
+{ return sha2big_xor_(sha2big_xor_(sha2big_rotr_(x, 1),
+	sha2big_rotr_(x, 8)), sha2big_shr_(x, 7)); }
+static sha2big_lw_
+sha2big_ssg1_(sha2big_lw_ x)
+{ return sha2big_xor_(sha2big_xor_(sha2big_rotr_(x, 19),
+	sha2big_rotr_(x, 61)), sha2big_shr_(x, 6)); }
+
+static void
+sha2big_round(const unsigned char *buf, uint64_t *val)
+{
+	sha2big_lw_ v[8], w[80], a, b, c, d, e, f, g, h, T1, T2, t, kk;
+	union { uint64_t u; unsigned long h2[2]; } cv;
+	int i;
+
+	for (i = 0; i < 8; i++) {
+		cv.u = val[i];
+		v[i].hi = cv.h2[0];
+		v[i].lo = cv.h2[1];
+	}
+	for (i = 0; i < 16; i++) {
+		const unsigned char *p = buf + i * 8;
+		w[i].hi = SHA2BIG_M32_(((unsigned long)p[0] << 24) |
+			((unsigned long)p[1] << 16) |
+			((unsigned long)p[2] << 8) | (unsigned long)p[3]);
+		w[i].lo = SHA2BIG_M32_(((unsigned long)p[4] << 24) |
+			((unsigned long)p[5] << 16) |
+			((unsigned long)p[6] << 8) | (unsigned long)p[7]);
+	}
+	for (i = 16; i < 80; i++) {
+		sha2big_add_(&t, sha2big_ssg1_(w[i - 2]), w[i - 7]);
+		sha2big_add_(&t, t, sha2big_ssg0_(w[i - 15]));
+		sha2big_add_(&w[i], t, w[i - 16]);
+	}
+	a = v[0]; b = v[1]; c = v[2]; d = v[3];
+	e = v[4]; f = v[5]; g = v[6]; h = v[7];
+	for (i = 0; i < 80; i++) {
+		cv.u = K[i];
+		kk.hi = cv.h2[0];
+		kk.lo = cv.h2[1];
+		sha2big_add_(&T1, h, sha2big_bsg1_(e));
+		sha2big_add_(&T1, T1, SHA2BIG_CH_(e, f, g));
+		sha2big_add_(&T1, T1, kk);
+		sha2big_add_(&T1, T1, w[i]);
+		sha2big_add_(&T2, sha2big_bsg0_(a), SHA2BIG_MAJ_(a, b, c));
+		h = g; g = f; f = e; sha2big_add_(&e, d, T1);
+		d = c; c = b; b = a; sha2big_add_(&a, T1, T2);
+	}
+	sha2big_add_(&v[0], v[0], a); sha2big_add_(&v[1], v[1], b);
+	sha2big_add_(&v[2], v[2], c); sha2big_add_(&v[3], v[3], d);
+	sha2big_add_(&v[4], v[4], e); sha2big_add_(&v[5], v[5], f);
+	sha2big_add_(&v[6], v[6], g); sha2big_add_(&v[7], v[7], h);
+	for (i = 0; i < 8; i++) {
+		cv.h2[0] = v[i].hi;
+		cv.h2[1] = v[i].lo;
+		val[i] = cv.u;
+	}
+}
+#else
 static void
 sha2big_round(const unsigned char *buf, uint64_t *val)
 {
@@ -139,6 +283,7 @@ sha2big_round(const unsigned char *buf, uint64_t *val)
 	val[6] += g;
 	val[7] += h;
 }
+#endif
 
 static void
 sha2big_update(br_sha384_context *cc, const void *data, size_t len)
@@ -185,10 +330,55 @@ sha2big_out(const br_sha384_context *cc, void *dst, int num)
 	} else {
 		memset(buf + ptr, 0, 112 - ptr);
 	}
+#ifdef __MWERKS__
+	/*
+	 * fixes411 -- CW8-safe length pad + digest output. The stock path uses
+	 * br_enc64be(count >> 61 / count << 3) and br_range_enc64be(val), all
+	 * 64-bit shifts that CW8 PPC miscompiles (same class as the round). Do
+	 * the 128-bit message-bit-length (= count * 8) and the digest encoding
+	 * in 32-bit limbs via the big-endian union split.
+	 */
+	{
+		union { uint64_t u; unsigned long h2[2]; } cv;
+		unsigned char *d = (unsigned char *)dst;
+		unsigned long chi, clo, bhi, blo, hh;
+		int j;
+
+		cv.u = cc->count;
+		chi = cv.h2[0];
+		clo = cv.h2[1];
+		hh  = SHA2BIG_M32_(chi >> 29);                  /* count >> 61 */
+		bhi = SHA2BIG_M32_((chi << 3) | (clo >> 29));   /* (count<<3) hi */
+		blo = SHA2BIG_M32_(clo << 3);                   /* (count<<3) lo */
+		memset(buf + 112, 0, 7);
+		buf[119] = (unsigned char)hh;
+		buf[120] = (unsigned char)(bhi >> 24);
+		buf[121] = (unsigned char)(bhi >> 16);
+		buf[122] = (unsigned char)(bhi >> 8);
+		buf[123] = (unsigned char)bhi;
+		buf[124] = (unsigned char)(blo >> 24);
+		buf[125] = (unsigned char)(blo >> 16);
+		buf[126] = (unsigned char)(blo >> 8);
+		buf[127] = (unsigned char)blo;
+		sha2big_round(buf, val);
+		for (j = 0; j < num; j++) {
+			cv.u = val[j];
+			d[j * 8 + 0] = (unsigned char)(cv.h2[0] >> 24);
+			d[j * 8 + 1] = (unsigned char)(cv.h2[0] >> 16);
+			d[j * 8 + 2] = (unsigned char)(cv.h2[0] >> 8);
+			d[j * 8 + 3] = (unsigned char)cv.h2[0];
+			d[j * 8 + 4] = (unsigned char)(cv.h2[1] >> 24);
+			d[j * 8 + 5] = (unsigned char)(cv.h2[1] >> 16);
+			d[j * 8 + 6] = (unsigned char)(cv.h2[1] >> 8);
+			d[j * 8 + 7] = (unsigned char)cv.h2[1];
+		}
+	}
+#else
 	br_enc64be(buf + 112, cc->count >> 61);
 	br_enc64be(buf + 120, cc->count << 3);
 	sha2big_round(buf, val);
 	br_range_enc64be(dst, val, num);
+#endif
 }
 
 /* see bearssl.h */
