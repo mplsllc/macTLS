@@ -124,7 +124,10 @@ extern void *g_ostls_ot_context;
 /* Internal connection structure                                     */
 /* ----------------------------------------------------------------- */
 
-#define OSTLS_READ_BUF_SIZE   4096
+/* fixes414 — widen the decrypted-read ring so a full TLS-1.3 plaintext
+ * record (up to 16 KB) drains in one deliver_plain pass instead of four.
+ * Big resources (mactrove PNGs) were crawling at ~4 KB per poll tick. */
+#define OSTLS_READ_BUF_SIZE   16384
 #define OSTLS_WRITE_BUF_SIZE  4096
 #define OSTLS_DEFAULT_TIMEOUT 1800UL  /* 30s @ 60Hz */
 
@@ -2100,7 +2103,9 @@ OSTLS_SHA384_KAT(void)
 {
     br_sha384_context sc;
     unsigned char out[48];
-    static const unsigned char expect[48] = {
+    unsigned char msg[200];
+    int i;
+    static const unsigned char exp_abc[48] = {
         0xcb,0x00,0x75,0x3f,0x45,0xa3,0x5e,0x8b,
         0xb5,0xa0,0x3d,0x69,0x9a,0xc6,0x50,0x07,
         0x27,0x2c,0x32,0xab,0x0e,0xde,0xd1,0x63,
@@ -2108,8 +2113,47 @@ OSTLS_SHA384_KAT(void)
         0x80,0x86,0x07,0x2b,0xa1,0xe7,0xcc,0x23,
         0x58,0xba,0xec,0xa1,0x34,0xc8,0x25,0xa7
     };
+    /* fixes414 -- multi-block vectors. "abc" is a single 128-byte SHA-512
+     * block, which cannot expose a bug in the block-chaining loop or the
+     * length-pad; a certificate's signed body is multi-block (Sectigo R36's
+     * TBS is 1080 bytes = 9 blocks). 200x'a' crosses block chaining; 112x'a'
+     * exercises the ptr>112 two-block padding branch in sha2big_out. If
+     * either fails while "abc" passes, the multi-block SHA-384 path is the
+     * reason Sectigo/SHA-384 cert chains are still rejected. */
+    static const unsigned char exp_200a[48] = {
+        0x06,0x91,0xb6,0xe9,0x78,0x61,0x4b,0x67,
+        0xd6,0x05,0x57,0xb2,0xa2,0xcd,0xdd,0x53,
+        0x40,0x65,0x08,0x52,0x2e,0xfa,0x21,0xc6,
+        0x24,0xdb,0xbf,0xa8,0xab,0x6e,0x72,0x6d,
+        0x5c,0x58,0x6b,0x48,0x9c,0x7c,0x09,0xf2,
+        0x41,0x09,0xa6,0x4c,0x10,0x21,0x1d,0x48
+    };
+    static const unsigned char exp_112a[48] = {
+        0x18,0x7d,0x4e,0x07,0xcb,0x30,0x61,0x03,
+        0xc6,0x99,0x67,0xbf,0x54,0x4d,0x0d,0xfb,
+        0xe9,0x04,0x25,0x77,0x59,0x9c,0x73,0xc3,
+        0x30,0xab,0xc0,0xcb,0x64,0xc6,0x12,0x36,
+        0xd5,0xed,0x56,0x5e,0xe1,0x91,0x19,0xd8,
+        0xc3,0x17,0x79,0xa3,0x8f,0x79,0x1f,0xcd
+    };
+
     br_sha384_init(&sc);
     br_sha384_update(&sc, "abc", 3);
     br_sha384_out(&sc, out);
-    return (memcmp(out, expect, 48) == 0) ? 0 : 1;
+    if (memcmp(out, exp_abc, 48) != 0) return 1;
+
+    for (i = 0; i < 200; i++) {
+        msg[i] = 0x61;  /* 'a' */
+    }
+    br_sha384_init(&sc);
+    br_sha384_update(&sc, msg, 200);
+    br_sha384_out(&sc, out);
+    if (memcmp(out, exp_200a, 48) != 0) return 2;
+
+    br_sha384_init(&sc);
+    br_sha384_update(&sc, msg, 112);
+    br_sha384_out(&sc, out);
+    if (memcmp(out, exp_112a, 48) != 0) return 3;
+
+    return 0;
 }
