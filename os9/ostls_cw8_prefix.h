@@ -91,13 +91,34 @@ static Point mactls_zero_pt_; /* zero-initialized at file scope */
 
 /*
  * Constant-time 31-bit multiplication. PPC's mullw has constant timing
- * on every shipping G3/G4 core we target, so BR_CT_MUL31 is not strictly
- * required. However, Stage A is about correctness and build stability,
- * not performance. Enable it during Stage A to be safe, and revisit
- * after the i31_moddiv hardware probe in Stage A.5.
+ * on every shipping G3/G4 core we target, so BR_CT_MUL31 is not required
+ * for security here.
+ *
+ * MUST be 0 on CW8 PPC. The BR_CT_MUL31=1 expansion of MUL31(x,y) is
+ *   (uint64_t)(x|0x80000000) * (uint64_t)(y|0x80000000)
+ *     - ((uint64_t)x << 31) - ((uint64_t)y << 31) - ((uint64_t)1 << 62)
+ * i.e. a 64-bit multiply MINUS three 64-bit constant shifts. CW8 PPC
+ * miscompiles the 64-bit shift-by-constant terms (the same defect
+ * documented in CLAUDE.md: "(int64_t)a * const writes a>>log2(const)
+ * into the high word"). The bare 64-bit product is sound (Stage A.5
+ * OSTLS_Mul64Probe verified it on hardware), but the A.5 probe never
+ * exercised the shift-subtraction terms, so the defect slipped through.
+ * The corruption only surfaces after enough Montgomery-multiply
+ * accumulation iterations, so RSA verifies under <=2048-bit keys pass
+ * by luck while >=3072-bit keys (Sectigo R36 3072-bit / R46 4096-bit
+ * anchor) fail: br_x509_minimal's check-trust-anchor-CA signature
+ * verify returns the wrong result and the chain validates as
+ * BR_ERR_X509_NOT_TRUSTED (62). Every hardware-working HTTPS site to
+ * date has an ECDSA leaf or a <=2048-bit RSA verify path; the Sectigo
+ * CA hierarchy is the first to require a >2048-bit RSA modexp.
+ *
+ * BR_CT_MUL31=0 makes MUL31(x,y) the plain (uint64_t)x*(uint64_t)y --
+ * mathematically identical for 31-bit operands (host-verified
+ * exhaustively) and the exact pattern A.5 already proved correct on the
+ * G3. This is the fix for the Sectigo NOT_TRUSTED failure.
  */
 #ifndef BR_CT_MUL31
-#define BR_CT_MUL31   1
+#define BR_CT_MUL31   0
 #endif
 
 /* No alternate path for 15-bit multiplies. Default off. */

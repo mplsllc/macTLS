@@ -141,5 +141,61 @@ OSTLS_Mul64Probe(void)
         return (OSErr)kOSTLSMul64FailD_CT;
     }
 
+    /*
+     * Pair E: the FULL BR_CT_MUL31 expansion of MUL31() -- the OR'd 64-bit
+     * product MINUS the three 64-bit constant shifts. For any 31-bit x,y
+     * this is mathematically equal to the plain product (uint64_t)x*y.
+     * On a correct compiler full_ct == plain; if CW8 PPC miscompiles the
+     * <<31 / <<62 terms, they DIFFER. This is the test A..D omitted.
+     */
+    {
+        static const uint32_t ev[] = {
+            0x00000000U, 0x00000001U, 0x7FFFFFFFU,
+            0x12345678U & 0x7FFFFFFFU, 0x55555555U, 0x7FFFFFFEU
+        };
+        int i, j;
+        for (i = 0; i < 6; i++) {
+            for (j = 0; j < 6; j++) {
+                volatile uint32_t vx = ev[i] & 0x7FFFFFFFU;
+                volatile uint32_t vy = ev[j] & 0x7FFFFFFFU;
+                uint32_t x = vx;
+                uint32_t y = vy;
+                uint64_t full_ct =
+                      (uint64_t)((x) | (uint32_t)0x80000000)
+                    * (uint64_t)((y) | (uint32_t)0x80000000)
+                    - ((uint64_t)(x) << 31)
+                    - ((uint64_t)(y) << 31)
+                    - ((uint64_t)1 << 62);
+                uint64_t plain = (uint64_t)x * (uint64_t)y;
+                if (full_ct != plain) {
+                    return (OSErr)kOSTLSMul64FailE_FullCT;
+                }
+            }
+        }
+    }
+
+    /*
+     * Pair F: bare 64-bit constant-shift high-word correctness. Directly
+     * targets the CW8 PPC defect: (uint64_t)v << 31 and << 62 must place
+     * the right bits in the high word.
+     */
+    {
+        volatile uint32_t vv = 0x6DB7A55FU;   /* 31 bits when masked */
+        uint64_t v = (uint64_t)(vv & 0x7FFFFFFFU);
+        uint64_t s31 = v << 31;
+        uint64_t one62 = (uint64_t)1 << 62;
+        uint32_t s31_hi = (uint32_t)(s31 >> 32);
+        uint32_t s31_lo = (uint32_t)(s31 & 0xFFFFFFFFU);
+        uint32_t one62_hi = (uint32_t)(one62 >> 32);
+        /* 0x6DB7A55F << 31 = 0x36DBD2AF80000000 */
+        if (s31_hi != 0x36DBD2AFU || s31_lo != 0x80000000U) {
+            return (OSErr)kOSTLSMul64FailF_Shift;
+        }
+        /* (1 << 62) high word = 0x40000000 */
+        if (one62_hi != 0x40000000U) {
+            return (OSErr)kOSTLSMul64FailF_Shift;
+        }
+    }
+
     return noErr;
 }

@@ -49,7 +49,20 @@ enum {
     kOSTLSMul64FailC_Raw     = 204,
     kOSTLSMul64FailC_CT      = 205,
     kOSTLSMul64FailD_Raw     = 206,
-    kOSTLSMul64FailD_CT      = 207
+    kOSTLSMul64FailD_CT      = 207,
+    /*
+     * Pair E/F probe the part the A..D pairs MISSED: the FULL BR_CT_MUL31
+     * expansion of MUL31(), which is the OR'd 64-bit product MINUS three
+     * 64-bit constant shifts ((x<<31), (y<<31), (1<<62)). The original A.5
+     * probe only checked the multiply, not the shift-subtraction, which is
+     * the exact CW8 PPC 64-bit-shift-by-constant defect. If E or F fails on
+     * hardware, BR_CT_MUL31 MUST stay 0 (the shipped fix); the plain
+     * multiply path is correct and is what the build now uses.
+     *   E: full MUL31 macro result == plain (uint64_t)x*y, several operands
+     *   F: bare (uint64_t)v << 31 / << 62 high-word correctness
+     */
+    kOSTLSMul64FailE_FullCT  = 208,
+    kOSTLSMul64FailF_Shift   = 209
 };
 
 /*
