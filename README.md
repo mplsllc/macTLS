@@ -39,7 +39,7 @@ It returns once the handshake is done, the request is out, and the response is c
 OSTLS_New / OSTLS_Start / OSTLS_Pump / OSTLS_Write / OSTLS_Read / OSTLS_Close / OSTLS_Dispose
 ```
 
-You drive it from your event loop. Each `OSTLS_Pump` does a bounded amount of work and returns, so the host stays responsive. This is what MacSurf uses. Stage D1 (async OT plumbing) and Stage D2 (full async handshake plus chunked read) both pass on real hardware.
+You drive it from your event loop. `max_steps` bounds the number of engine steps, not wall-clock time: a TLS 1.3 handshake step can include X25519 key exchange and certificate-chain validation. An issue contributor measured one full-handshake `OSTLS_Pump` call at 61–305 ms on a G4; treat that as a reported measurement, not a timing bound. The call does not wait for network data, but a handshake step can use noticeable CPU time, so update the UI before calling it. This is what MacSurf uses. Stage D1 (async OT plumbing) and Stage D2 (full async handshake plus chunked read) both pass on real hardware.
 
 ## Entropy: macEntropy v1.0
 
