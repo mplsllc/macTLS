@@ -138,4 +138,4 @@ What's next, roughly in order: the v0.3 HTTP conveniences (redirect following an
 
 ## License
 
-MIT, see [LICENSE](LICENSE). BearSSL is also MIT, vendored under `bearssl/` with its own license file. Nothing else third-party is statically linked into the build.
+MIT, see [LICENSE](LICENSE). This license applies to macTLS-authored code; third-party components retain their own terms. BearSSL is MIT-licensed under `bearssl/LICENSE.txt`. TLS 1.3 code adapted from Certainly by Matt Baker is MIT-licensed with attribution; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The bundled Mozilla CA certificates are data, not macTLS-authored code; see `os9/ostls_b3_anchors.c` and `tools/regenerate_anchors.sh` for their source and regeneration.

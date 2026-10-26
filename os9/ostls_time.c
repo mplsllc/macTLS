@@ -9,17 +9,23 @@
  */
 
 #include "ostls_time.h"
+#include "macsurf_runtime_profile.h"
 
 #include <string.h>
 
-#ifdef __MWERKS__
+#if MACSURF_CLASSIC_RUNTIME
 #include <Types.h>
 #include <DateTimeUtils.h>      /* GetDateTime */
+#include <OSUtils.h>            /* ReadLocation, MachineLocation */
 #else
-/* Non-CW8 syntax check. GetDateTime is a Toolbox call -- under
- * Retro68 we stub it to a fixed value sufficient to make the file
- * parse and exercise the math at the type-system level. */
+/* Retro68 preflight and host builds retain syntax-only Toolbox stubs. */
 static void GetDateTime(UInt32 *p) { *p = 0; }
+typedef struct {
+    long latitude;
+    long longitude;
+    union { char dlsDelta; long gmtDelta; } u;
+} MachineLocation;
+static void ReadLocation(MachineLocation *l) { l->u.gmtDelta = 0; }
 #endif
 
 
@@ -50,36 +56,70 @@ static void GetDateTime(UInt32 *p) { *p = 0; }
 
 
 OSErr
-OSTLS_GetBearSSLTime(UInt32 *out_days, UInt32 *out_seconds)
+OSTLS_GetBearSSLTimeDetails(OSTLSTimeDetails *details)
 {
     UInt32 mac_seconds;
     UInt32 unix_seconds;
     UInt32 unix_days;
     UInt32 seconds_of_day;
 
-    if (out_days == NULL || out_seconds == NULL) {
+    if (details == NULL) {
         return (OSErr)kOSTLSTimeBadArgs;
     }
+    memset(details, 0, sizeof(*details));
 
     mac_seconds = 0;
     GetDateTime(&mac_seconds);
+    details->local_mac_seconds = mac_seconds;
+
+    /* fixes834: GetDateTime returns the Mac's LOCAL time, but X.509
+     * notBefore/notAfter are in GMT and br_x509_minimal_set_time expects
+     * a GMT "now". Using local time as GMT skews validation by the
+     * machine's timezone offset -- normally harmless (certs last months)
+     * but on a FRESH cert whose notBefore is within that offset of now,
+     * a machine behind GMT (e.g. US timezones) sees it as not-yet-valid
+     * and fails with X509_EXPIRED (br_err=54), while a machine at/ahead
+     * of GMT loads it fine. Convert local -> GMT with the machine's
+     * gmtDelta (seconds EAST of GMT; local = GMT + gmtDelta, so
+     * GMT = local - gmtDelta). Low 24 bits of u.gmtDelta hold the signed
+     * offset; the high byte is dlsDelta. If unset, gmtDelta is 0 -> no
+     * change (correct for a GMT machine). Done in unsigned arithmetic
+     * because mac_seconds exceeds LONG_MAX for post-2038 Mac epochs. */
+    {
+        MachineLocation loc;
+        long gmtDelta;
+        memset(&loc, 0, sizeof(loc));
+        ReadLocation(&loc);
+        gmtDelta = loc.u.gmtDelta & 0x00FFFFFFL;   /* low 24 bits */
+        if (gmtDelta & 0x00800000L) {              /* sign-extend 24-bit */
+            gmtDelta -= 0x01000000L;
+        }
+        if (gmtDelta >= 0) {
+            if (mac_seconds >= (UInt32)gmtDelta) {
+                mac_seconds -= (UInt32)gmtDelta;
+            }
+        } else {
+            mac_seconds += (UInt32)(-gmtDelta);
+        }
+        details->gmt_delta_seconds = gmtDelta;
+    }
+    details->utc_mac_seconds = mac_seconds;
 
     /* If the clock reads before 1970 the subtraction would underflow
      * in unsigned arithmetic; catch that as the same "clock before
      * 2000" failure since we won't get a usable date in either case. */
     if (mac_seconds < OSTLS_MAC_TO_UNIX_OFFSET) {
-        *out_days = 0;
-        *out_seconds = 0;
+        details->result = (OSErr)kOSTLSTimeClockBefore2000;
         return (OSErr)kOSTLSTimeClockBefore2000;
     }
     unix_seconds = mac_seconds - OSTLS_MAC_TO_UNIX_OFFSET;
+    details->unix_seconds = unix_seconds;
 
     /* Reject Mac clocks set before 2000-01-01 -- post-2000-issued
      * certs would look not-yet-valid against such a "now" and the
      * resulting validation cascade hides the root cause. */
     if (unix_seconds < OSTLS_UNIX_TO_2000_OFFSET) {
-        *out_days = 0;
-        *out_seconds = 0;
+        details->result = (OSErr)kOSTLSTimeClockBefore2000;
         return (OSErr)kOSTLSTimeClockBefore2000;
     }
 
@@ -88,7 +128,24 @@ OSTLS_GetBearSSLTime(UInt32 *out_days, UInt32 *out_seconds)
     unix_days       = unix_seconds / 86400UL;
     seconds_of_day  = unix_seconds % 86400UL;
 
-    *out_days    = unix_days + OSTLS_BEARSSL_DAYS_UNIX_EPOCH;
-    *out_seconds = seconds_of_day;
+    details->bearssl_days = unix_days + OSTLS_BEARSSL_DAYS_UNIX_EPOCH;
+    details->bearssl_seconds = seconds_of_day;
+    details->result = (OSErr)kOSTLSTimeOK;
     return (OSErr)kOSTLSTimeOK;
+}
+
+
+OSErr
+OSTLS_GetBearSSLTime(UInt32 *out_days, UInt32 *out_seconds)
+{
+    OSTLSTimeDetails details;
+    OSErr err;
+
+    if (out_days == NULL || out_seconds == NULL) {
+        return (OSErr)kOSTLSTimeBadArgs;
+    }
+    err = OSTLS_GetBearSSLTimeDetails(&details);
+    *out_days = details.bearssl_days;
+    *out_seconds = details.bearssl_seconds;
+    return err;
 }

@@ -15,6 +15,8 @@
  */
 
 #include "ostls_async.h"
+#include "macsurf_runtime_profile.h"
+#include "ostls_log.h"
 #include "ostls_b3_anchors.h"
 #include "ostls_time.h"
 #include "ostls_entropy.h"
@@ -29,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __MWERKS__
+#if MACSURF_CLASSIC_RUNTIME
 #include <Types.h>
 #include <Memory.h>            /* NewPtrClear, DisposePtr */
 #include <Events.h>            /* TickCount */
@@ -39,9 +41,8 @@
 extern OTClientContextPtr g_ostls_ot_context;
 #else
 /*
- * Non-CW8 Retro68 syntax-check stubs. Real linkage happens only on
- * CW8 against CarbonLib; these are enough to make the syntax check
- * happy on the Linux side.
+ * Retro68 preflight and host syntax-check stubs. Native macMAKE and CW8
+ * use Universal Interfaces and real CFM imports instead.
  */
 typedef long OTResult;
 typedef long OTEventCode;
@@ -71,6 +72,11 @@ typedef struct {
     long servtype, flags;
 } TEndpointInfo;
 typedef void (*OTNotifyProcPtr)(void *, OTEventCode, OTResult, void *);
+/* fixes951c — under a real Carbon build OPAQUE_UPP_TYPES makes OTNotifyUPP an
+ * opaque type built by NewOTNotifyUPP(), not a bare function pointer. Mirror
+ * that here so the Linux syntax check matches CW8. */
+typedef OTNotifyProcPtr OTNotifyUPP;
+#define NewOTNotifyUPP(fn) ((OTNotifyUPP)(fn))
 /* `pascal` is already a Retro68 built-in calling-convention keyword;
  * do not redefine. */
 #define noErr            0
@@ -85,12 +91,17 @@ typedef void (*OTNotifyProcPtr)(void *, OTEventCode, OTResult, void *);
 #define T_EXDATA        0x00000008L
 #define T_DISCONNECT    0x00000010L
 #define T_ORDREL        0x00000080L
+/* fixes936 — added by fixes686 (Path B) to the notifier without updating this
+ * stub block, so the non-CW8 syntax check has failed on this file ever since.
+ * Values confirmed against Universal Interfaces OpenTransport.h. */
+#define T_GODATA        0x00000100L
+#define kOTSyncIdleEvent 0x20000011L
 /* OT endpoint-state values (OTGetEndpointState) */
 #define T_OUTCON        3
 #define T_DATAXFER      5
 #define T_OUTREL        6
 static OTConfigurationRef OTCreateConfiguration(const char *s){(void)s;return (OTConfigurationRef)1;}
-static OSStatus OTAsyncOpenEndpointInContext(OTConfigurationRef c,unsigned long f,TEndpointInfo *i,OTNotifyProcPtr p,void *x,void *ctx){(void)c;(void)f;(void)i;(void)p;(void)x;(void)ctx;return noErr;}
+static OSStatus OTAsyncOpenEndpointInContext(OTConfigurationRef c,unsigned long f,TEndpointInfo *i,OTNotifyUPP p,void *x,void *ctx){(void)c;(void)f;(void)i;(void)p;(void)x;(void)ctx;return noErr;}
 static OSStatus OTBind(EndpointRef e,TBind *r,TBind *o){(void)e;(void)r;(void)o;return noErr;}
 static OSStatus OTConnect(EndpointRef e,TCall *c,void *r){(void)e;(void)c;(void)r;return noErr;}
 static OTResult OTSnd(EndpointRef e,void *b,long n,long f){(void)e;(void)b;(void)f;return n;}
@@ -105,6 +116,14 @@ static OTResult OTGetEndpointState(EndpointRef e){(void)e;return T_DATAXFER;}
 static OSStatus OTCloseProvider(EndpointRef e){(void)e;return noErr;}
 static long OTInitDNSAddress(DNSAddress *d,const char *s){(void)d;(void)s;return 0;}
 static void OTInitInetAddress(InetAddress *a, InetPort p, InetHost h){(void)a;(void)p;(void)h;}
+/* fixes936 — async/non-blocking configuration + Thread Manager yield, used by
+ * the fixes686 (Path B) notifier. Missing since fixes686; C89 implicit
+ * declaration hid them as warnings rather than errors, but a future
+ * -Werror=implicit-function-declaration (GCC 14+ default) would break them. */
+static OSStatus OTSetAsynchronous(EndpointRef e){(void)e;return noErr;}
+static OSStatus OTSetNonBlocking(EndpointRef e){(void)e;return noErr;}
+static OSStatus OTUseSyncIdleEvents(EndpointRef e,Boolean b){(void)e;(void)b;return noErr;}
+static OSErr YieldToAnyThread(void){return noErr;}
 /* fixes252 — TCP_NODELAY option stubs for Retro68 syntax check */
 typedef struct { unsigned long len; unsigned long level; unsigned long name; unsigned long status; unsigned long value[1]; } TOption;
 typedef struct { TNetbuf opt; long flags; } TOptMgmt;
@@ -279,6 +298,23 @@ struct OSTLSConnection {
  *
  * Touches only the volatile nf_* fields on the connection.
  */
+/* fixes951c — ONE notifier UPP for the process. NewOTNotifyUPP allocates a
+ * routine descriptor; creating one per connection would leak one every time
+ * a socket is opened. Built lazily at first use, never disposed (it lives as
+ * long as the process needs OT). */
+static OTNotifyUPP g_ostls_notifier_upp = NULL;
+#if MACSURF_COMPILER_MACMAKE_GCC
+static int g_ostls_diag_log_init_attempted = 0;
+static OSErr g_ostls_diag_log_init_result = -1;
+/* Keep the bring-up trace bounded when a page opens many HTTPS resources.
+ * The first connection is enough to establish the clock/OT/handshake path. */
+static int g_ostls_diag_conn_claimed = 0;
+static OSTLSConnection *g_ostls_diag_conn = NULL;
+#define OSTLS_DIAG_CONN_SELECTED(conn) ((conn) == g_ostls_diag_conn)
+#else
+#define OSTLS_DIAG_CONN_SELECTED(conn) 1
+#endif
+
 static pascal void
 ostls_notifier(void *context, OTEventCode event,
                OTResult result, void *cookie)
@@ -463,6 +499,9 @@ OSTLS_Dispose(OSTLSConnection *conn)
     }
 
     conn->disposed = true;
+#if MACSURF_COMPILER_MACMAKE_GCC
+    if (conn == g_ostls_diag_conn) g_ostls_diag_conn = NULL;
+#endif
     DisposePtr((char *)conn);
 }
 
@@ -479,6 +518,10 @@ OSTLS_Start(OSTLSConnection *conn)
     OSErr time_err;
     UInt32 br_days;
     UInt32 br_seconds;
+    OSTLSTimeDetails time_details;
+    int diag_this_connection;
+
+    diag_this_connection = 1;
 
     if (conn == NULL || conn->disposed) {
         return (OSErr)kOSTLSAsync_BadArgs;
@@ -490,23 +533,57 @@ OSTLS_Start(OSTLSConnection *conn)
         return (OSErr)kOSTLSAsync_WrongState;
     }
 
+#if MACSURF_COMPILER_MACMAKE_GCC
+    if (!g_ostls_diag_conn_claimed) {
+        g_ostls_diag_conn_claimed = 1;
+        g_ostls_diag_conn = conn;
+    }
+    diag_this_connection = (conn == g_ostls_diag_conn);
+
+    if (!g_ostls_diag_log_init_attempted) {
+        g_ostls_diag_log_init_attempted = 1;
+        g_ostls_diag_log_init_result = OSTLS_LogInit();
+        OSTLS_LogLinef("macTLS diagnostics: log init=%d",
+                       (int)g_ostls_diag_log_init_result);
+    }
+#endif
+
     /* Validate the system clock before we kick off any TLS work --
      * a pre-2000 clock will make every cert fail validation later
      * and the user will see a useless "handshake failed" instead
      * of an actionable "set your clock" message. */
-    time_err = OSTLS_GetBearSSLTime(&br_days, &br_seconds);
+    time_err = OSTLS_GetBearSSLTimeDetails(&time_details);
+    br_days = time_details.bearssl_days;
+    br_seconds = time_details.bearssl_seconds;
+    if (diag_this_connection) {
+        OSTLS_LogLinef("macTLS time: local=%lu gmt_delta=%ld utc_mac=%lu unix=%lu bear_days=%lu bear_seconds=%lu result=%d",
+                       (unsigned long)time_details.local_mac_seconds,
+                       time_details.gmt_delta_seconds,
+                       (unsigned long)time_details.utc_mac_seconds,
+                       (unsigned long)time_details.unix_seconds,
+                       (unsigned long)br_days, (unsigned long)br_seconds,
+                       (int)time_err);
+    }
     if (time_err == kOSTLSTimeClockBefore2000) {
         conn->state = kOSTLSStateFailed;
         conn->os_err = (OSErr)kOSTLSAsync_ClockBefore2000;
+        if (diag_this_connection)
+            OSTLS_LogLinef("macTLS start: state=Failed clock result=%d",
+                           (int)conn->os_err);
         return (OSErr)kOSTLSAsync_ClockBefore2000;
     }
     if (time_err != kOSTLSTimeOK) {
         conn->state = kOSTLSStateFailed;
         conn->os_err = (OSErr)kOSTLSAsync_ClockBefore2000;
+        if (diag_this_connection)
+            OSTLS_LogLinef("macTLS start: state=Failed time result=%d",
+                           (int)time_err);
         return (OSErr)kOSTLSAsync_ClockBefore2000;
     }
 
     cfg = OTCreateConfiguration("tcp");
+    if (diag_this_connection)
+        OSTLS_LogLinef("macTLS OTCreateConfiguration result=%p", cfg);
     if (cfg == NULL || cfg == (OTConfigurationRef)-1L) {
         conn->state = kOSTLSStateFailed;
         conn->os_err = (OSErr)kOSTLSAsync_OTConfigFail;
@@ -518,11 +595,16 @@ OSTLS_Start(OSTLSConnection *conn)
      * the notifier when the endpoint is ready; that handler stashes
      * the EndpointRef into conn->ep.
      */
+    if (g_ostls_notifier_upp == NULL)
+        g_ostls_notifier_upp = NewOTNotifyUPP(ostls_notifier);
     OTMemzero(&conn->ep_info, sizeof conn->ep_info);
     oterr = OTAsyncOpenEndpointInContext(cfg, 0, &conn->ep_info,
-                                         (OTNotifyProcPtr)ostls_notifier,
+                                         g_ostls_notifier_upp,
                                          conn,
                                          g_ostls_ot_context);
+    if (diag_this_connection)
+        OSTLS_LogLinef("macTLS OTAsyncOpenEndpointInContext result=%ld",
+                       (long)oterr);
     if (oterr != noErr) {
         conn->state = kOSTLSStateFailed;
         conn->os_err = (OSErr)kOSTLSAsync_OTOpenFail;
@@ -531,6 +613,8 @@ OSTLS_Start(OSTLSConnection *conn)
     }
 
     conn->state = kOSTLSStateConnecting;
+    if (diag_this_connection)
+        OSTLS_LogLine("macTLS state: Idle -> Connecting");
     conn->connect_phase = kConnectPhase_OpenInFlight;
     conn->start_ticks = (UInt32)TickCount();
     conn->started = true;
@@ -553,7 +637,7 @@ ostls_fail(OSTLSConnection *conn, OSErr os_err,
            OSStatus ot_err, int br_err)
 {
     /* Trap for the "ghost" 2009 error with ot=0. */
-    if (os_err == 2009 && ot_err == 0) {
+    if (os_err == 2009 && ot_err == 0 && OSTLS_DIAG_CONN_SELECTED(conn)) {
         OSTLS_LogLine("TRAP: ostls_fail called with os_err=2009 and ot=0");
     }
 
@@ -569,6 +653,9 @@ ostls_fail(OSTLSConnection *conn, OSErr os_err,
         return kOSTLSEventNone;
     }
     conn->state = kOSTLSStateFailed;
+    if (OSTLS_DIAG_CONN_SELECTED(conn))
+        OSTLS_LogLinef("macTLS state: ->Failed os=%d ot=%ld br=%d",
+                       (int)conn->os_err, (long)conn->ot_err, conn->br_err);
     return kOSTLSEventFailed;
 }
 
@@ -867,6 +954,9 @@ pump_connect_step(OSTLSConnection *conn, UInt32 *steps_used)
                               -1, 0);
         }
         conn->ep_open = true;
+        if (OSTLS_DIAG_CONN_SELECTED(conn))
+            OSTLS_LogLinef("macTLS OT open-complete result=%ld ep=%p",
+                           (long)conn->nf_last_result, conn->ep);
         conn->connect_phase = kConnectPhase_NeedsBind;
         (*steps_used)++;
         return kOSTLSEventNone;
@@ -880,6 +970,8 @@ pump_connect_step(OSTLSConnection *conn, UInt32 *steps_used)
         OTMemzero(&conn->bind_req, sizeof conn->bind_req);
         OTMemzero(&conn->bind_ret, sizeof conn->bind_ret);
         oterr = OTBind(conn->ep, NULL, NULL);
+        if (OSTLS_DIAG_CONN_SELECTED(conn))
+            OSTLS_LogLinef("macTLS OTBind result=%ld", (long)oterr);
         if (oterr != noErr && oterr != kOTNoError) {
             return ostls_fail(conn, (OSErr)kOSTLSAsync_OTBindFail,
                               oterr, 0);
@@ -912,6 +1004,8 @@ pump_connect_step(OSTLSConnection *conn, UInt32 *steps_used)
         conn->connect_call.addr.buf = (UInt8 *)&conn->dns_addr;
         conn->connect_call.addr.len = (short)dns_len;
         oterr = OTConnect(conn->ep, &conn->connect_call, NULL);
+        if (OSTLS_DIAG_CONN_SELECTED(conn))
+            OSTLS_LogLinef("macTLS OTConnect submit result=%ld", (long)oterr);
         if (oterr != noErr && oterr != kOTNoError &&
             oterr != kOTNoDataErr) {
             /* kOTNoDataErr after an async OTConnect means "in
@@ -934,6 +1028,8 @@ pump_connect_step(OSTLSConnection *conn, UInt32 *steps_used)
 
         /* Consume the connect event at app-time. */
         oterr = OTRcvConnect(conn->ep, NULL);
+        if (OSTLS_DIAG_CONN_SELECTED(conn))
+            OSTLS_LogLinef("macTLS OT connect-complete result=%ld", (long)oterr);
         if (oterr != noErr) {
             return ostls_fail(conn, (OSErr)kOSTLSAsync_OTConnectFail,
                               oterr, 0);
@@ -976,6 +1072,8 @@ pump_connect_step(OSTLSConnection *conn, UInt32 *steps_used)
 
         /* Transition to handshaking. */
         conn->state = kOSTLSStateHandshaking;
+        if (OSTLS_DIAG_CONN_SELECTED(conn))
+            OSTLS_LogLine("macTLS state: Connecting -> Handshaking");
         {
             OSTLSEvent setup_ev = ostls_setup_bearssl(conn);
             if (setup_ev == kOSTLSEventFailed) return kOSTLSEventFailed;
@@ -1416,9 +1514,11 @@ ostls_fallback_to_tls12(OSTLSConnection *conn)
     if (cfg == NULL || cfg == (OTConfigurationRef)-1L) {
         return ostls_fail(conn, (OSErr)kOSTLSAsync_OTConfigFail, noErr, 0);
     }
+    if (g_ostls_notifier_upp == NULL)
+        g_ostls_notifier_upp = NewOTNotifyUPP(ostls_notifier);
     OTMemzero(&conn->ep_info, sizeof conn->ep_info);
     oterr = OTAsyncOpenEndpointInContext(cfg, 0, &conn->ep_info,
-                                         (OTNotifyProcPtr)ostls_notifier,
+                                         g_ostls_notifier_upp,
                                          conn, g_ostls_ot_context);
     if (oterr != noErr) {
         return ostls_fail(conn, (OSErr)kOSTLSAsync_OTOpenFail, oterr, 0);
@@ -1481,6 +1581,14 @@ pump_tls13_consume_record(OSTLSConnection *conn, OSTLSEvent *best_event)
 
     if (conn->tls13_recv_len < 5) return 0;
     reclen = ((UInt32)conn->ssl_iobuf[3] << 8) | (UInt32)conn->ssl_iobuf[4];
+    /* fixes1197 - reject an out-of-spec record length before it reaches
+     * tls13_record_decrypt(), which copies the full length unconditionally
+     * into the fixed-size plain_buf with no bound of its own. */
+    if (reclen > (UInt32)sizeof(conn->hs13->plain_buf)) {
+        ostls_fail(conn, (OSErr)kOSTLSAsync_BearSSLError, noErr, BR_ERR_BAD_PARAM);
+        *best_event = kOSTLSEventFailed;
+        return 1;
+    }
     total = 5 + reclen;
     if (conn->tls13_recv_len < total) return 0;  /* await the rest */
 

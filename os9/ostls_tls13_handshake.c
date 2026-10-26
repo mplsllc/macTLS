@@ -2,6 +2,8 @@
  * tls13_handshake.c — TLS 1.3 handshake state machine
  *
  * This file implements the TLS 1.3 handshake message construction
+ * Adapted for macTLS (CW8, C89) from Certainly by minorbug (Matt Baker),
+ * MIT licensed. See THIRD_PARTY_NOTICES.md for the required notice.
  * and parsing, bypassing BearSSL's T0-based handshake engine entirely.
  * We use BearSSL only for crypto primitives (HKDF, X25519, AEAD)
  * and buffer I/O.
