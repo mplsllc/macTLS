@@ -2,10 +2,6 @@ MIT License
 
 Copyright (c) 2026 Patrick Britton
 
-This license applies to macTLS-authored code only. Third-party components
-retain their own copyright notices and license terms; see
-THIRD_PARTY_NOTICES.md and the license files in their directories.
-
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
