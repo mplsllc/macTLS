@@ -1,0 +1,84 @@
+[project]
+name = "macTLSProbe"
+default_target = "Classic PPC CFM Application"
+
+[[target]]
+name = "Classic PPC CFM Application"
+kind = "application"
+platform = "classic-mac-os"
+architecture = "powerpc"
+api = "carbon-lib"
+runtime = "cfm"
+runtime_profile = "codewarrior-msl-compatible"
+executable = "pef"
+language = "c"
+backend = "macmake-classic"
+compiler_target = "classic-ppc-xcoff-c-v1"
+sources = [
+    "main.c",
+]
+
+access_paths = [
+    {class = "user", path = ".", recursive = true},
+    {class = "user", path = "../os9", recursive = true},
+    {class = "system", path = "../../macMAKELibs/MSL_C/MSL_Common/Include", recursive = true},
+    {class = "system", anchor = "sdk", path = "sysroot", recursive = true},
+]
+
+[target.compiler]
+standard = "c89"
+
+[target.cfm_fragment]
+output_name = "macTLSProbe"
+fragment_name = "macTLSProbe"
+main = "main"
+creator = "MTPR"
+file_type = "APPL"
+old_definition_version = 1
+old_import_version = 0
+current_version = 1
+share_data = false
+exports = "none"
+
+[[target.libraries]]
+name = "InterfaceLib"
+kind = "system-import"
+
+[[target.libraries]]
+name = "MathLib"
+kind = "system-import"
+
+[[target.libraries]]
+name = "macTLSLib"
+kind = "vendor"
+path = "../os9/build/macTLSLib/ClassicPPCCFMSharedLibrary/macTLSLib"
+
+[[target.libraries]]
+name = "MSL_C_Carbon"
+kind = "archive"
+path = "../os9/sdk/MSL_C_Carbon.Lib"
+
+[[target.libraries]]
+name = "MSL_Runtime_PPC_D"
+kind = "archive"
+path = "../os9/sdk/MSL_Runtime_PPC_D.Lib"
+
+[target.application]
+creator = "MTPR"
+file_type = "APPL"
+output_name = "macTLSProbe"
+
+[target.application.memory]
+preferred_heap_bytes = 2097152
+minimum_heap_bytes = 1048576
+application_stack_bytes = 65536
+size_flags = 0x0001
+
+[target.sdk]
+packages = ["macos9-sdk"]
+requires = [
+    "classic.universal-interfaces.headers",
+    "classic.carbon.headers",
+    "classic.carbon.imports",
+    "classic.math.imports",
+]

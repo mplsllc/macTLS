@@ -1,0 +1,204 @@
+[project]
+name = "macTLSLib"
+default_target = "Classic PPC CFM Shared Library"
+
+[[target]]
+name = "Classic PPC CFM Shared Library"
+kind = "shared-library"
+platform = "classic-mac-os"
+architecture = "powerpc"
+api = "carbon-lib"
+runtime = "cfm"
+runtime_profile = "codewarrior-msl-compatible"
+executable = "pef"
+language = "c"
+backend = "macmake-classic"
+compiler_target = "classic-ppc-xcoff-c-v1"
+sources = [
+    "ostls_async.c",
+    "ostls_b1_tcp.c",
+    "ostls_b2_handshake.c",
+    "ostls_b3_anchors.c",
+    "ostls_b3_handshake.c",
+    "ostls_d1_probe.c",
+    "ostls_entropy.c",
+    "ostls_fetch.c",
+    "ostls_http.c",
+    "ostls_log.c",
+    "ostls_mul64_probe.c",
+    "ostls_ot_stubs.c",
+    "ostls_provider.c",
+    "ostls_smoketest.c",
+    "ostls_ticket_cache.c",
+    "ostls_time.c",
+    "ostls_tls13_handshake.c",
+    "ostls_tls13_keysched.c",
+    "ostls_tls13_otprobe.c",
+    "ostls_tls13_record.c",
+    "ostls_tls13_selftest.c",
+    "ssl_engine_cw8.c",
+    "../bearssl/src/ssl/ssl_client_full.c",
+    "../bearssl/src/ssl/ssl_client.c",
+    "../bearssl/src/hash/sha2big.c",
+    "../bearssl/src/hash/sha2small.c",
+    "../bearssl/src/hash/sha1.c",
+    "../bearssl/src/hash/md5.c",
+    "../bearssl/src/hash/dig_oid.c",
+    "../bearssl/src/hash/dig_size.c",
+    "../bearssl/src/hash/multihash.c",
+    "../bearssl/src/x509/x509_decoder.c",
+    "../bearssl/src/ec/ec_default.c",
+    "../bearssl/src/ec/ec_keygen.c",
+    "../bearssl/src/ec/ec_pubkey.c",
+    "../bearssl/src/ec/ecdsa_default_vrfy_asn1.c",
+    "../bearssl/src/rand/hmac_drbg.c",
+    "../bearssl/src/mac/hmac.c",
+    "../bearssl/src/rsa/rsa_default_pss_vrfy.c",
+    "../bearssl/src/symcipher/poly1305_ctmul.c",
+    "../bearssl/src/symcipher/poly1305_ctmul32.c",
+    "../bearssl/src/symcipher/poly1305_ctmulq.c",
+    "../bearssl/src/symcipher/poly1305_i15.c",
+    "../bearssl/src/symcipher/aes_ct.c",
+    "../bearssl/src/symcipher/aes_ct_ctr.c",
+    "../bearssl/src/aead/gcm.c",
+    "../bearssl/src/symcipher/chacha20_ct.c",
+    "../bearssl/src/hash/ghash_ctmul32.c",
+    "../bearssl/src/rand/sysrng.c",
+    "../bearssl/src/x509/x509_minimal.c",
+    "../bearssl/src/ssl/ssl_client_default_rsapub.c",
+    "../bearssl/src/ssl/ssl_engine_default_rsavrfy.c",
+    "../bearssl/src/ssl/ssl_engine_default_ecdsa.c",
+    "../bearssl/src/ssl/ssl_engine_default_aescbc.c",
+    "../bearssl/src/ssl/ssl_engine_default_aesccm.c",
+    "../bearssl/src/ssl/ssl_engine_default_aesgcm.c",
+    "../bearssl/src/ssl/ssl_engine_default_descbc.c",
+    "../bearssl/src/ssl/ssl_engine_default_chapol.c",
+    "../bearssl/src/ssl/prf_md5sha1.c",
+    "../bearssl/src/ssl/prf_sha256.c",
+    "../bearssl/src/ssl/prf_sha384.c",
+    "../bearssl/src/ssl/ssl_hs_client.c",
+    "../bearssl/src/codec/dec64be.c",
+    "../bearssl/src/codec/enc64be.c",
+    "../bearssl/src/codec/dec32be.c",
+    "../bearssl/src/codec/enc32be.c",
+    "../bearssl/src/codec/dec32le.c",
+    "../bearssl/src/codec/enc32le.c",
+    "../bearssl/src/ec/ec_all_m31.c",
+    "../bearssl/src/ec/ecdsa_i31_vrfy_asn1.c",
+    "../bearssl/src/rsa/rsa_i31_pss_vrfy.c",
+    "../bearssl/src/int/i15_decode.c",
+    "../bearssl/src/int/i15_decmod.c",
+    "../bearssl/src/int/i15_add.c",
+    "../bearssl/src/int/i15_sub.c",
+    "../bearssl/src/int/i15_montmul.c",
+    "../bearssl/src/int/i15_encode.c",
+    "../bearssl/src/symcipher/aes_ct_enc.c",
+    "../bearssl/src/rsa/rsa_default_pub.c",
+    "../bearssl/src/rsa/rsa_default_pkcs1_vrfy.c",
+    "../bearssl/src/ssl/ssl_rec_cbc.c",
+    "../bearssl/src/symcipher/aes_ct_cbcdec.c",
+    "../bearssl/src/symcipher/aes_ct_cbcenc.c",
+    "../bearssl/src/ssl/ssl_rec_ccm.c",
+    "../bearssl/src/symcipher/aes_ct_ctrcbc.c",
+    "../bearssl/src/ssl/ssl_rec_gcm.c",
+    "../bearssl/src/hash/ghash_ctmul.c",
+    "../bearssl/src/symcipher/des_ct_cbcdec.c",
+    "../bearssl/src/symcipher/des_ct_cbcenc.c",
+    "../bearssl/src/ssl/ssl_rec_chapol.c",
+    "../bearssl/src/ssl/prf.c",
+    "../bearssl/src/ec/ec_p256_m31.c",
+    "../bearssl/src/ec/ec_c25519_m31.c",
+    "../bearssl/src/ec/ec_prime_i31.c",
+    "../bearssl/src/ec/ecdsa_atr.c",
+    "../bearssl/src/ec/ecdsa_i31_vrfy_raw.c",
+    "../bearssl/src/rsa/rsa_i31_pub.c",
+    "../bearssl/src/rsa/rsa_pss_sig_unpad.c",
+    "../bearssl/src/int/i15_bitlen.c",
+    "../bearssl/src/rsa/rsa_i31_pkcs1_vrfy.c",
+    "../bearssl/src/mac/hmac_ct.c",
+    "../bearssl/src/symcipher/aes_ct_dec.c",
+    "../bearssl/src/aead/ccm.c",
+    "../bearssl/src/symcipher/des_ct.c",
+    "../bearssl/src/symcipher/des_support.c",
+    "../bearssl/src/codec/ccopy.c",
+    "../bearssl/src/int/i31_add.c",
+    "../bearssl/src/int/i31_sub.c",
+    "../bearssl/src/int/i31_montmul.c",
+    "../bearssl/src/int/i31_encode.c",
+    "../bearssl/src/int/i31_modpow.c",
+    "../bearssl/src/int/i31_iszero.c",
+    "../bearssl/src/int/i31_decmod.c",
+    "../bearssl/src/ec/ec_secp256r1.c",
+    "../bearssl/src/ec/ec_secp384r1.c",
+    "../bearssl/src/ec/ec_secp521r1.c",
+    "../bearssl/src/int/i31_decode.c",
+    "../bearssl/src/int/i31_ninv31.c",
+    "../bearssl/src/int/i31_fmont.c",
+    "../bearssl/src/ec/ecdsa_i31_bits.c",
+    "../bearssl/src/int/i31_modpow2.c",
+    "../bearssl/src/hash/mgf1.c",
+    "../bearssl/src/rsa/rsa_pkcs1_sig_unpad.c",
+    "../bearssl/src/int/i31_tmont.c",
+    "../bearssl/src/int/i31_bitlen.c",
+    "../bearssl/src/int/i31_rshift.c",
+    "../bearssl/src/int/i31_muladd.c",
+    "../bearssl/src/int/i32_div32.c",
+]
+
+access_paths = [
+    {class = "user", path = ".", recursive = true},
+    {class = "system", anchor = "sdk", path = "sysroot", recursive = true},
+]
+
+[target.compiler]
+standard = "c89"
+prefix_header = "prefix.h"
+
+[target.cfm_fragment]
+output_name = "macTLSLib"
+fragment_name = "macTLSLib"
+main = "OSTLS_LibInit"
+creator = "MTLS"
+file_type = "shlb"
+old_definition_version = 1
+old_import_version = 0
+current_version = 1
+share_data = false
+exports = "all"
+
+[[target.libraries]]
+name = "InterfaceLib"
+kind = "system-import"
+
+[[target.libraries]]
+name = "MathLib"
+kind = "system-import"
+
+[[target.libraries]]
+name = "CarbonLib"
+kind = "system-import"
+pef_fragments = [
+  { fragment_name = "CarbonLib", offset = 0, length = 80688, weak_import = false },
+  { fragment_name = "CarbonLib", offset = 80688, length = 91808, weak_import = false },
+  { fragment_name = "CarbonLib", offset = 172496, length = 74960, weak_import = false },
+  { fragment_name = "CarbonLib", offset = 247456, length = 5464, weak_import = false },
+]
+
+[[target.libraries]]
+name = "MSL_C_Carbon"
+kind = "archive"
+path = "sdk/MSL_C_Carbon.Lib"
+
+[[target.libraries]]
+name = "MSL_Runtime_PPC_D"
+kind = "archive"
+path = "sdk/MSL_Runtime_PPC_D.Lib"
+
+[target.sdk]
+packages = ["macos9-sdk"]
+requires = [
+    "classic.universal-interfaces.headers",
+    "classic.carbon.headers",
+    "classic.carbon.imports",
+    "classic.math.imports",
+]
