@@ -6,10 +6,11 @@
  */
 
 #include <stddef.h>
+#include <OpenTransport.h>
 #include "ostls_async.h"
 
 /* Global Open Transport context - owned by the application */
-void *g_ostls_ot_context = NULL;
+OTClientContextPtr g_ostls_ot_context = NULL;
 
 /* CFM Fragment initialization routine */
 OSErr OSTLS_LibInit(void)
@@ -33,12 +34,12 @@ OSErr OSTLS_SetOTContext(void *ot_context)
     if (!ot_context) {
         return -1; /* paramErr */
     }
-    g_ostls_ot_context = ot_context;
+    g_ostls_ot_context = (OTClientContextPtr)ot_context;
     return noErr;
 }
 
 /* Get the Open Transport context */
 void *OSTLS_GetOTContext(void)
 {
-    return g_ostls_ot_context;
+    return (void *)g_ostls_ot_context;
 }

@@ -123,7 +123,7 @@ One CW8 quirk worth knowing: if you compile a macTLS `.c` from a project that do
 
 macTLS didn't come out of nowhere. A few related projects:
 
-- [**Certainly**](https://github.com/minorbug/certainly) (minorbug, MIT): BearSSL over Open Transport on the Retro68 toolchain, TLS 1.3. Closest sibling, and the basis for macTLS's own 1.3 — we adapted its hand-written `tls13_*` handshake, key schedule, and record modules from C99/Retro68 to CodeWarrior 8 C89, wired them to macTLS's OT pump, macEntropy, and anchor bundle, and fixed a couple of bugs along the way (its ChaCha20-Poly1305 decrypt skipped the auth-tag check; we added a constant-time compare). Attribution is in the source of the ported files.
+- [**Certainly**](https://github.com/minorbug/certainly) by Matt Baker (MIT): BearSSL over Open Transport on the Retro68 toolchain, TLS 1.3. macTLS's TLS 1.3 handshake, key-schedule, and record-layer modules adapt Certainly's implementation for CodeWarrior 8 C89 and the macTLS API. See [`third_party/README.md`](third_party/README.md) and the retained [Certainly license](third_party/licenses/Certainly-MIT.txt).
 - [**MacTLS** (bbenchoff)](https://github.com/bbenchoff/MacTLS): an mbedtls/PolarSSL port to CodeWarrior Pro 4 for Mac OS 7/8/9. First public proof that CodeWarrior plus classic Mac plus TLS works at all. Frozen since 2024, TLS 1.1, one hardcoded site. The name collision is a coincidence, separate projects.
 - [**Crypto Ancienne**](https://github.com/classilla/cryanc) / `carl` (Cameron Kaiser): a TLSe-based proxy tool that runs under MPW, known to work with Classilla. Different runtime model (an MPW shell tool, not a Carbon library), but it shows old browsers can drive a local HTTPS helper if there's one to drive.
 

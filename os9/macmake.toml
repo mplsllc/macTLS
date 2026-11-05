@@ -187,12 +187,12 @@ pef_fragments = [
 [[target.libraries]]
 name = "MSL_C_Carbon"
 kind = "archive"
-path = "sdk/MSL_C_Carbon.Lib"
+path = "../deps/MSL_C_Carbon.Lib"
 
 [[target.libraries]]
 name = "MSL_Runtime_PPC_D"
 kind = "archive"
-path = "sdk/MSL_Runtime_PPC_D.Lib"
+path = "../deps/MSL_Runtime_PPC_D.Lib"
 
 [target.sdk]
 packages = ["macos9-sdk"]

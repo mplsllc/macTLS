@@ -21,12 +21,14 @@ sources = [
 access_paths = [
     {class = "user", path = ".", recursive = true},
     {class = "user", path = "../os9", recursive = true},
+    {class = "system", path = "../os9", recursive = true},
     {class = "system", path = "../../macMAKELibs/MSL_C/MSL_Common/Include", recursive = true},
     {class = "system", anchor = "sdk", path = "sysroot", recursive = true},
 ]
 
 [target.compiler]
 standard = "c89"
+include_search = { source_directory_first = true }
 
 [target.cfm_fragment]
 output_name = "macTLSProbe"
@@ -56,12 +58,12 @@ path = "../os9/build/macTLSLib/ClassicPPCCFMSharedLibrary/macTLSLib"
 [[target.libraries]]
 name = "MSL_C_Carbon"
 kind = "archive"
-path = "../os9/sdk/MSL_C_Carbon.Lib"
+path = "../deps/MSL_C_Carbon.Lib"
 
 [[target.libraries]]
 name = "MSL_Runtime_PPC_D"
 kind = "archive"
-path = "../os9/sdk/MSL_Runtime_PPC_D.Lib"
+path = "../deps/MSL_Runtime_PPC_D.Lib"
 
 [target.application]
 creator = "MTPR"

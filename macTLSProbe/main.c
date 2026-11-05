@@ -35,6 +35,7 @@ typedef struct FSSpec FSSpec;
 #include <OpenTransport.h>
 #include <OpenTptInternet.h>
 
+#include "../os9/macsurf_runtime_profile.h"
 #include "../os9/ostls_async.h"
 
 /* Open Transport context, owned by this application */
